@@ -1,11 +1,14 @@
 import os
 import sys
+import wandb
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from .utils import namespace_to_dict
 
 import argbind
 import torch
+import torchaudio
 from audiotools import AudioSignal
 from audiotools import ml
 from audiotools.core import util
@@ -118,14 +121,13 @@ class State:
     train_data: AudioDataset
     val_data: AudioDataset
 
-    tracker: Tracker
+    step: int = 0
 
 
 @argbind.bind(without_prefix=True)
 def load(
     args,
     accel: ml.Accelerator,
-    tracker: Tracker,
     save_path: str,
     resume: bool = False,
     tag: str = "latest",
@@ -200,7 +202,6 @@ def load(
         train_data=train_data,
         val_data=val_data,
     )
-
 
 @timer()
 @torch.no_grad()
@@ -280,22 +281,22 @@ def train_loop(state, batch, accel, lambdas):
     return {k: v for k, v in sorted(output.items())}
 
 
-def checkpoint(state, save_iters, save_path):
-    metadata = {"logs": state.tracker.history}
+def checkpoint(state, save_iters, save_path, tracker):
+    metadata = {"logs": tracker.history}
 
+    print(f"[Checkpoint] Saving to {str(Path('.').absolute())}")
     tags = ["latest"]
-    state.tracker.print(f"Saving to {str(Path('.').absolute())}")
-    if state.tracker.is_best("val", "mel/loss"):
-        state.tracker.print(f"Best generator so far")
+    if tracker.is_best("val","mel/loss"):
+        print(f"[Checkpoint] Best generator so far")
         tags.append("best")
-    if state.tracker.step in save_iters:
-        tags.append(f"{state.tracker.step // 1000}k")
+    if state.step in save_iters:
+        tags.append(f"{state.step // 1000}k")
 
     for tag in tags:
         generator_extra = {
             "optimizer.pth": state.optimizer_g.state_dict(),
             "scheduler.pth": state.scheduler_g.state_dict(),
-            "tracker.pth": state.tracker.state_dict(),
+            "tracker-pth": tracker.state_dict(),
             "metadata.pth": metadata,
         }
         accel.unwrap(state.generator).metadata = metadata
@@ -312,8 +313,8 @@ def checkpoint(state, save_iters, save_path):
 
 
 @torch.no_grad()
-def save_samples(state, val_idx, writer):
-    state.tracker.print("Saving audio samples to TensorBoard")
+def save_samples(state, val_idx, save_path):
+    print("--->Saving audio samples to disk--->")
     state.generator.eval()
 
     samples = [state.val_data[idx] for idx in val_idx]
@@ -327,14 +328,18 @@ def save_samples(state, val_idx, writer):
     recons = AudioSignal(out["audio"], signal.sample_rate)
 
     audio_dict = {"recons": recons}
-    if state.tracker.step == 0:
+    if state.step == 0:
         audio_dict["signal"] = signal
 
     for k, v in audio_dict.items():
         for nb in range(v.batch_size):
-            v[nb].cpu().write_audio_to_tb(
-                f"{k}/sample_{nb}.wav", writer, state.tracker.step
+            audio_sample = v[nb].cpu()
+
+            filename = os.path.join(
+                save_path,
+                f"{k}_step{state.step}_sample{nb}.wav" if k == "recons" else f"{k}_sample{nb}.wav"
             )
+            torchaudio.save(filename, audio_sample.audio_data, audio_sample.sample_rate)
 
 
 def validate(state, val_dataloader, accel):
@@ -371,17 +376,18 @@ def train(
 ):
     util.seed(seed)
     Path(save_path).mkdir(exist_ok=True, parents=True)
-    writer = (
-        SummaryWriter(log_dir=f"{save_path}/logs") if accel.local_rank == 0 else None
-    )
-    tracker = Tracker(
-        writer=writer, log_file=f"{save_path}/log.txt", rank=accel.local_rank
-    )
+    if accel.local_rank == 0:
+        wandb.login()
+        os.environ["WANDB_MODE"] = "online"
+        os.environ["WANDB_CACHE_DIR"] = "/scratch/lg154/sseg/.cache/wandb"
+        os.environ["WANDB_CONFIG_DIR"] = "/scratch/lg154/sseg/.config/wandb"
+        wandb.init(project="audio_codec", config=namespace_to_dict(args), name='baseline')
+    
 
-    state = load(args, accel, tracker, save_path)
+    state = load(args, accel, save_path)
     train_dataloader = accel.prepare_dataloader(
         state.train_data,
-        start_idx=state.tracker.step * batch_size,
+        start_idx=state.step * batch_size,
         num_workers=num_workers,
         batch_size=batch_size,
         collate_fn=state.train_data.collate,
@@ -398,10 +404,8 @@ def train(
 
     # Wrap the functions so that they neatly track in TensorBoard + progress bars
     # and only run when specific conditions are met.
-    global train_loop, val_loop, validate, save_samples, checkpoint
-    train_loop = tracker.log("train", "value", history=False)(
-        tracker.track("train", num_iters, completed=state.tracker.step)(train_loop)
-    )
+    tracker = Tracker(rank=accel.local_rank)
+    global val_loop, validate, save_samples, checkpoint
     val_loop = tracker.track("val", len(val_dataloader))(val_loop)
     validate = tracker.log("val", "mean")(validate)
 
@@ -409,24 +413,28 @@ def train(
     save_samples = when(lambda: accel.local_rank == 0)(save_samples)
     checkpoint = when(lambda: accel.local_rank == 0)(checkpoint)
 
-    with tracker.live:
-        for tracker.step, batch in enumerate(train_dataloader, start=tracker.step):
-            train_loop(state, batch, accel, lambdas)
+    for step, batch in enumerate(train_dataloader, start=state.step):
+        metrics = train_loop(state, batch, accel, lambdas)
+        metrics = {f"train/{k}": v for k, v in metrics.items()}
+        if accel.local_rank == 0:
+            wandb.log(metrics, step=state.step)
 
-            last_iter = (
-                tracker.step == num_iters - 1 if num_iters is not None else False
-            )
-            if tracker.step % sample_freq == 0 or last_iter:
-                save_samples(state, val_idx, writer)
+        last_iter = (
+            step == num_iters - 1 if num_iters is not None else False
+        )
+        if step % sample_freq == 0 or last_iter:
+            save_samples(state, val_idx, save_path)
 
-            if tracker.step % valid_freq == 0 or last_iter:
-                validate(state, val_dataloader, accel)
-                checkpoint(state, save_iters, save_path)
-                # Reset validation progress bar, print summary since last validation.
-                tracker.done("val", f"Iteration {tracker.step}")
+        if step % valid_freq == 0 or last_iter:
+            validate(state, val_dataloader, accel)
+            if accel.local_rank == 0:
+                val_metrics = {f"val/{k}": v for k, v in tracker.metrics["val"]["mean"].items()}
+                wandb.log(val_metrics, step=state.step)
+            checkpoint(state, save_iters, save_path, tracker)
+            print(f"Val done")
 
-            if last_iter:
-                break
+        if last_iter:
+            break
 
 
 if __name__ == "__main__":

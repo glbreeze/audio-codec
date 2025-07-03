@@ -43,7 +43,7 @@ setup(
             "psutil",
             "pandas",
             "onnx",
-            "onnx-simplifier",
+            "onnxsim",
             "seaborn",
             "jupyterlab",
             "pandas",
