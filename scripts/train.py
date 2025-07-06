@@ -4,7 +4,8 @@ import wandb
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from .utils import namespace_to_dict
+import argparse
+from types import SimpleNamespace
 
 import argbind
 import torch
@@ -24,6 +25,11 @@ from torch.utils.tensorboard import SummaryWriter
 import dac
 
 warnings.filterwarnings("ignore", category=UserWarning)
+
+def namespace_to_dict(ns):
+    if isinstance(ns, (SimpleNamespace, argparse.Namespace)):
+        return {k: namespace_to_dict(v) for k, v in vars(ns).items()}
+    return ns
 
 # Enable cudnn autotuner to speed up training
 # (can be altered by the funcs.seed function)
@@ -142,7 +148,7 @@ def load(
             "map_location": "cpu",
             "package": not load_weights,
         }
-        tracker.print(f"Resuming from {str(Path('.').absolute())}/{kwargs['folder']}")
+        print(f"Resuming from {str(Path('.').absolute())}/{kwargs['folder']}")
         if (Path(kwargs["folder"]) / "dac").exists():
             generator, g_extra = DAC.load_from_folder(**kwargs)
         if (Path(kwargs["folder"]) / "discriminator").exists():
@@ -151,8 +157,8 @@ def load(
     generator = DAC() if generator is None else generator
     discriminator = Discriminator() if discriminator is None else discriminator
 
-    tracker.print(generator)
-    tracker.print(discriminator)
+    print(generator)
+    print(discriminator)
 
     generator = accel.prepare_model(generator)
     discriminator = accel.prepare_model(discriminator)
@@ -168,8 +174,8 @@ def load(
         optimizer_g.load_state_dict(g_extra["optimizer.pth"])
     if "scheduler.pth" in g_extra:
         scheduler_g.load_state_dict(g_extra["scheduler.pth"])
-    if "tracker.pth" in g_extra:
-        tracker.load_state_dict(g_extra["tracker.pth"])
+    # if "tracker.pth" in g_extra:
+    #     tracker.load_state_dict(g_extra["tracker.pth"])
 
     if "optimizer.pth" in d_extra:
         optimizer_d.load_state_dict(d_extra["optimizer.pth"])
@@ -198,7 +204,6 @@ def load(
         stft_loss=stft_loss,
         mel_loss=mel_loss,
         gan_loss=gan_loss,
-        tracker=tracker,
         train_data=train_data,
         val_data=val_data,
     )
@@ -339,7 +344,7 @@ def save_samples(state, val_idx, save_path):
                 save_path,
                 f"{k}_step{state.step}_sample{nb}.wav" if k == "recons" else f"{k}_sample{nb}.wav"
             )
-            torchaudio.save(filename, audio_sample.audio_data, audio_sample.sample_rate)
+            torchaudio.save(filename, audio_sample.audio_data[0], audio_sample.sample_rate)
 
 
 def validate(state, val_dataloader, accel):
@@ -374,16 +379,10 @@ def train(
         "vq/codebook_loss": 1.0,
     },
 ):
+
     util.seed(seed)
     Path(save_path).mkdir(exist_ok=True, parents=True)
-    if accel.local_rank == 0:
-        wandb.login()
-        os.environ["WANDB_MODE"] = "online"
-        os.environ["WANDB_CACHE_DIR"] = "/scratch/lg154/sseg/.cache/wandb"
-        os.environ["WANDB_CONFIG_DIR"] = "/scratch/lg154/sseg/.config/wandb"
-        wandb.init(project="audio_codec", config=namespace_to_dict(args), name='baseline')
     
-
     state = load(args, accel, save_path)
     train_dataloader = accel.prepare_dataloader(
         state.train_data,
@@ -415,8 +414,8 @@ def train(
 
     for step, batch in enumerate(train_dataloader, start=state.step):
         metrics = train_loop(state, batch, accel, lambdas)
-        metrics = {f"train/{k}": v for k, v in metrics.items()}
-        if accel.local_rank == 0:
+        metrics = {f"train/{k}": (v.item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
+        if accel.local_rank == 0 and step % 50 ==0:
             wandb.log(metrics, step=state.step)
 
         last_iter = (
@@ -428,7 +427,10 @@ def train(
         if step % valid_freq == 0 or last_iter:
             validate(state, val_dataloader, accel)
             if accel.local_rank == 0:
-                val_metrics = {f"val/{k}": v for k, v in tracker.metrics["val"]["mean"].items()}
+                val_metrics = {
+                    f"val/{k}": float(v())  # returns a float, guaranteed
+                    for k, v in tracker.metrics["val"]["mean"].items() if v is not None
+                    }
                 wandb.log(val_metrics, step=state.step)
             checkpoint(state, save_iters, save_path, tracker)
             print(f"Val done")
@@ -436,12 +438,21 @@ def train(
         if last_iter:
             break
 
+        state.step +=1
+
 
 if __name__ == "__main__":
     args = argbind.parse_args()
     args["args.debug"] = int(os.getenv("LOCAL_RANK", 0)) == 0
     with argbind.scope(args):
         with Accelerator() as accel:
+            if accel.local_rank == 0:
+                wandb.login()
+                os.environ["WANDB_MODE"] = "online"
+                os.environ["WANDB_CACHE_DIR"] = "/scratch/lg154/sseg/.cache/wandb"
+                os.environ["WANDB_CONFIG_DIR"] = "/scratch/lg154/sseg/.config/wandb"
+                wandb.init(project="audio_codec", config=namespace_to_dict(args), name='baseline')
+
             if accel.local_rank != 0:
                 sys.tracebacklimit = 0
             train(args, accel)

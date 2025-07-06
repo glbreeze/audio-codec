@@ -42,8 +42,6 @@ setup(
             "pynvml",
             "psutil",
             "pandas",
-            "onnx",
-            "onnxsim",
             "seaborn",
             "jupyterlab",
             "pandas",

@@ -85,39 +85,13 @@ AudioLoader.shuffle: true
 AudioDataset.without_replacement: true
 
 train/build_dataset.folders:
-  speech_fb:
-    - /data/daps/train
   speech_hq:
-    - /data/vctk
-    - /data/vocalset
-    - /data/read_speech
-    - /data/french_speech
-  speech_uq:
-    - /data/emotional_speech/
-    - /data/common_voice/
-    - /data/german_speech/
-    - /data/russian_speech/
-    - /data/spanish_speech/
-  music_hq:
-    - /data/musdb/train
-  music_uq:
-    - /data/jamendo
-  general:
-    - /data/audioset/data/unbalanced_train_segments/
-    - /data/audioset/data/balanced_train_segments/
+    - /vast/lg154/datasets/LibriSpeech/train-clean-100
 
 val/build_dataset.folders:
   speech_hq:
-    - /data/daps/val
-  music_hq:
-    - /data/musdb/test
-  general:
-    - /data/audioset/data/eval_segments/
+    - /vast/lg154/datasets/LibriSpeech/test-clean
 
 test/build_dataset.folders:
   speech_hq:
-    - /data/daps/test
-  music_hq:
-    - /data/musdb/test
-  general:
-    - /data/audioset/data/eval_segments/
+    - /vast/lg154/datasets/LibriSpeech/test-clean
