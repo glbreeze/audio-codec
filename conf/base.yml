@@ -85,13 +85,12 @@ AudioLoader.shuffle: true
 AudioDataset.without_replacement: true
 
 train/build_dataset.folders:
-  speech_hq:
-    - /vast/lg154/datasets/LibriSpeech/train-clean-100
+  music_hq:
+    - /vast/lg154/datasets/musdb_instrumental/train
 
 val/build_dataset.folders:
-  speech_hq:
-    - /vast/lg154/datasets/LibriSpeech/test-clean
-
+  music_hq:
+    - /vast/lg154/datasets/musdb_instrumental/test
 test/build_dataset.folders:
-  speech_hq:
-    - /vast/lg154/datasets/LibriSpeech/test-clean
+  music_hq:
+    - /vast/lg154/datasets/musdb_instrumental/test

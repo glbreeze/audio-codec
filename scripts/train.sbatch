@@ -5,9 +5,9 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=80GB
-#SBATCH --time=48:00:00
+#SBATCH --time=96:00:00
 #SBATCH --gres=gpu
-#SBATCH --partition=a100_1,a100_2,v100,h100_1
+#SBATCH --partition=a100_1,a100_2,h100_1,v100,rtx8000
 
 # Singularity path
 ext3_path=/scratch/$USER/python11/overlay-25GB-500K.ext3
@@ -21,6 +21,6 @@ source /ext3/env.sh
 export SSL_CERT_FILE=/scratch/lg154/sseg/fs-ood/cacert.pem
 export CUDA_VISIBLE_DEVICES=0
 
-python scripts/train.py --args.load conf/ablations/baseline.yml --save_path runs/baseline1/
+python scripts/train.py --args.load conf/ablations/baseline.yml --save_path runs/baseline_mus_instrumental/
 
 "
