@@ -366,3 +366,29 @@ class GANLoss(nn.Module):
             for j in range(len(d_fake[i]) - 1):
                 loss_feature += F.l1_loss(d_fake[i][j], d_real[i][j].detach())
         return loss_g, loss_feature
+
+
+class SemanticEmbeddingLoss(nn.Module):
+    def __init__(self, loss_type='l2'):
+        super().__init__()
+        assert loss_type in ['l2', 'cos'], "loss_type must be either 'l2' or 'cos'"
+        self.loss_type = loss_type
+
+    def forward(self, pred_emb: torch.Tensor, ref_emb: torch.Tensor) -> torch.Tensor:
+        """Assumes input shapes are (B, D, T) or (B, T, D) and interpolation along time axis."""
+        if pred_emb.shape != ref_emb.shape:
+            # Try to interpolate pred_emb to match ref_emb
+            if pred_emb.shape[-1] != ref_emb.shape[-1]:
+                pred_emb = F.interpolate(pred_emb, size=ref_emb.shape[-1], mode="linear", align_corners=False)
+            if pred_emb.shape != ref_emb.shape:
+                raise ValueError(f"Shape mismatch after interpolation: {pred_emb.shape} vs {ref_emb.shape}")
+
+        if self.loss_type == 'l2':
+            loss = F.mse_loss(pred_emb, ref_emb)
+        elif self.loss_type == 'cos':
+            # Normalize along embedding dim
+            pred_norm = F.normalize(pred_emb, dim=1)
+            ref_norm = F.normalize(ref_emb, dim=1)
+            loss = 1 - (pred_norm * ref_norm).sum(dim=1).mean()
+
+        return loss

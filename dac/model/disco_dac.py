@@ -7,12 +7,13 @@ import torch
 from audiotools import AudioSignal
 from audiotools.ml import BaseModel
 from torch import nn
+from torch.nn import functional as F
 
 from .base import CodecMixin
 from dac.nn.layers import Snake1d
 from dac.nn.layers import WNConv1d, WNConvTranspose1d
 from dac.nn.layers import TransformerSentenceEncoderLayer
-from dac.nn.quantize import ResidualVectorQuantize
+from dac.nn.quantize import ResidualVectorQuantize, VectorQuantize
 from dac.nn.custom_layers import Fp32LayerNorm, TransposeLast
 
 from dac.model.dac import ResidualUnit, EncoderBlock, init_weights
@@ -137,38 +138,83 @@ class DecoderBlock(nn.Module):
     def forward(self, x):
         return self.block(x)
 
+class FiLMGenerator(nn.Module):
+    def __init__(self, in_dim, out_dim, hidden_dim=128, kernel_size=3, depth=2, strides = []):
+        super().__init__()
+        layers = []
+        for i in range(depth):
+            dim_in = in_dim if i == 0 else hidden_dim
+            layers.append(nn.Conv1d(dim_in, hidden_dim, kernel_size, padding=kernel_size//2))
+            layers.append(nn.ReLU())
+        self.shared_net = nn.Sequential(*layers)
+        
+        if len(strides) > 0:
+            upsample_layers = [nn.ConvTranspose1d(
+                hidden_dim, hidden_dim, kernel_size=stride*2, stride=stride, padding = stride//2
+                ) for stride in strides]
+            self.upsample = nn.Sequential(*upsample_layers)
+        else:
+            self.upsample = nn.Identity()
+
+        self.to_gamma = nn.Conv1d(hidden_dim, out_dim, kernel_size=1)
+        self.to_beta = nn.Conv1d(hidden_dim, out_dim, kernel_size=1)
+
+    def forward(self, sem_embedding):  # [B, D_sem, T]
+        h = self.shared_net(sem_embedding)  # [B, H, T]
+        h = self.upsample(h)
+        gamma = self.to_gamma(h)  # [B, D, T]
+        beta = self.to_beta(h)    # [B, D, T]
+        return gamma, beta
+
 
 class Decoder(nn.Module):
-    def __init__(
-        self,
-        input_channel,
-        channels,
-        rates,
-        d_out: int = 1,
-    ):
+    def __init__(self, input_channel, channels, rates, d_out = 1, 
+                 film_layer_idx=1,):
         super().__init__()
 
         # Add first conv layer
-        layers = [WNConv1d(input_channel, channels, kernel_size=7, padding=3)]
+        self.pre_conv = WNConv1d(input_channel, channels, kernel_size=7, padding=3)
 
         # Add upsampling + MRF blocks
+        self.layers = nn.ModuleList()
         for i, stride in enumerate(rates):
             input_dim = channels // 2**i
             output_dim = channels // 2 ** (i + 1)
-            layers += [DecoderBlock(input_dim, output_dim, stride)]
+            self.layers.append(DecoderBlock(input_dim, output_dim, stride))
 
         # Add final conv layer
-        layers += [
+        self.post_conv = nn.Sequential(
             Snake1d(output_dim),
             WNConv1d(output_dim, d_out, kernel_size=7, padding=3),
             nn.Tanh(),
-        ]
+        )
 
-        self.model = nn.Sequential(*layers)
+        # FiLM layer
+        self.film_layer_idx = film_layer_idx
+        self.film_channels = channels // 2 ** film_layer_idx
+        self.film = FiLMGenerator(in_dim = input_channel, out_dim=self.film_channels, strides=rates[0:film_layer_idx])
 
-    def forward(self, x):
-        return self.model(x)
+    def forward(self, z_acs, z_sem):
+        gamma, beta = self.film(z_sem) # [B, D, T]
 
+        z = self.pre_conv(z_acs)
+
+        if self.film_layer_idx == 0:
+            if gamma.shape[-1] != z.shape[-1]:
+                gamma = F.interpolate(gamma, size=z.shape[-1], mode='nearest')
+                beta = F.interpolate(beta, size=z.shape[-1], mode='nearest')
+            z = gamma * z + beta
+
+        for i, layer in enumerate(self.layers):
+            z = layer(z)
+            if i + 1 == self.film_layer_idx:
+                if gamma.shape[-1] != z.shape[-1]:
+                    gamma = F.interpolate(gamma, size=z.shape[-1], mode='nearest')
+                    beta = F.interpolate(beta, size=z.shape[-1], mode='nearest')
+                z = gamma * z + beta
+        
+        out = self.post_conv(z)
+        return out
 
 
 class DiscoDAC(BaseModel, CodecMixin):
@@ -185,6 +231,7 @@ class DiscoDAC(BaseModel, CodecMixin):
         sem_codebook_size=512,
         quantizer_dropout: bool = False,
         sample_rate: int = 44100,
+        film_layer_idx: int = 1,
     ):
         super().__init__()
 
@@ -214,11 +261,16 @@ class DiscoDAC(BaseModel, CodecMixin):
             codebook_dim=codebook_dim,
             quantizer_dropout=quantizer_dropout,
         )
+        self.sem_quantizer = VectorQuantize(
+            input_dim=latent_dim, 
+            codebook_size=sem_codebook_size, 
+            codebook_dim=codebook_dim)
 
         self.decoder = Decoder(
             latent_dim,
             decoder_dim,
             decoder_rates,
+            film_layer_idx= film_layer_idx,
         )
         self.sample_rate = sample_rate
         self.apply(init_weights)
