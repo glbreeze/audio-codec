@@ -424,8 +424,8 @@ def train(
     hubert_model = HubertModel.from_pretrained(
         "facebook/hubert-base-ls960", 
         torch_dtype=torch.float16, 
-        attn_implementation="flash_attention_2")
-    hubert_model = hubert_model.cuda()
+        #attn_implementation="flash_attention_2",
+        ).cuda()
     hubert_model.eval()
 
     # Wrap the functions so that they neatly track in TensorBoard + progress bars
@@ -478,7 +478,7 @@ if __name__ == "__main__":
                 os.environ["WANDB_MODE"] = "online"
                 # os.environ["WANDB_CACHE_DIR"] = "/scratch/lg154/sseg/.cache/wandb"
                 # os.environ["WANDB_CONFIG_DIR"] = "/scratch/lg154/sseg/.config/wandb"
-                wandb.init(project="audio_codec", config=namespace_to_dict(args), name='baseline')
+                wandb.init(project="audio_codec", config=namespace_to_dict(args), name=args['exp_name'])
 
             if accel.local_rank != 0:
                 sys.tracebacklimit = 0

@@ -1,9 +1,9 @@
 # Model setup
 DAC.sample_rate: 16000
 DAC.encoder_dim: 64
-DAC.encoder_rates: [2, 4, 8, 8]
+DAC.encoder_rates: [2, 4, 5, 8]
 DAC.decoder_dim: 1536
-DAC.decoder_rates: [8, 8, 4, 2]
+DAC.decoder_rates: [8, 5, 4, 2]
 
 # Quantization
 DAC.n_codebooks: 9
@@ -86,14 +86,14 @@ AudioDataset.without_replacement: true
 
 train/build_dataset.folders:
   speech_fb:
-    - /home/asus/Research/datasets/LibriSpeech/train-clean-100
+    - /vast/lg154/datasets/LibriSpeech/train-clean-100
 
 val/build_dataset.folders:
   speech_fb:
-    - /home/asus/Research/datasets/LibriSpeech/test-clean
+    - /vast/lg154/datasets/LibriSpeech/test-clean
 test/build_dataset.folders:
   speech_fb:
-    - /home/asus/Research/datasets/LibriSpeech/test-clean
+    - /vast/lg154/datasets/LibriSpeech/test-clean
 
 batch_size: 12
 val_batch_size: 12

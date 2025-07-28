@@ -89,16 +89,17 @@ AudioDataset.without_replacement: true
 
 train/build_dataset.folders:
   speech_fb:
-    - /home/asus/Research/datasets/LibriSpeech/train-clean-100
+    - /vast/lg154/datasets/LibriSpeech/train-clean-100
 
 val/build_dataset.folders:
   speech_fb:
-    - /home/asus/Research/datasets/LibriSpeech/test-clean
+    - /vast/lg154/datasets/LibriSpeech/test-clean
 test/build_dataset.folders:
   speech_fb:
-    - /home/asus/Research/datasets/LibriSpeech/test-clean
+    - /vast/lg154/datasets/LibriSpeech/test-clean
   
 batch_size: 12
 val_batch_size: 12
 num_workers: 4
+exp_name: baseline
 
