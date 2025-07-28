@@ -11,7 +11,7 @@ from torch.nn import functional as F
 
 from .base import CodecMixin
 from dac.nn.layers import Snake1d
-from dac.nn.layers import WNConv1d, WNConvTranspose1d
+from dac.nn.layers import WNConv1d, WNConvTranspose1d, AsymmetricPad1d
 from dac.nn.layers import TransformerSentenceEncoderLayer
 from dac.nn.quantize import ResidualVectorQuantize, VectorQuantize
 from dac.nn.custom_layers import Fp32LayerNorm, TransposeLast
@@ -132,10 +132,17 @@ class FiLMGenerator(nn.Module):
         if len(strides) > 0:
             upsample_layers = []
             for stride in strides:
-                upsample_layers.append(nn.ConvTranspose1d(
-                    hidden_dim, hidden_dim, kernel_size=stride*2, stride=stride, padding=stride//2
-                ))
-                upsample_layers.append(nn.ReLU())
+                
+                if stride % 2 == 0:
+                    pad_left = pad_right = stride//2
+                else:
+                    pad_left = stride//2 + 1
+                    pad_right = stride//2
+                
+                upsample_layers.append(
+                    AsymmetricPad1d(pad_left, pad_right),
+                    nn.ConvTranspose1d(hidden_dim, hidden_dim, kernel_size=stride*2, stride=stride, padding=0),
+                    nn.ReLU())
             self.upsample = nn.Sequential(*upsample_layers)
         else:
             self.upsample = nn.Identity()
