@@ -16,7 +16,7 @@ from dac.nn.layers import TransformerSentenceEncoderLayer
 from dac.nn.quantize import ResidualVectorQuantize, VectorQuantize
 from dac.nn.custom_layers import Fp32LayerNorm, TransposeLast
 
-from dac.model.dac import ResidualUnit, EncoderBlock, init_weights
+from dac.model.dac import ResidualUnit, EncoderBlock, init_weights, DecoderBlock
 
 
 class SharedEncoder(nn.Module):
@@ -28,7 +28,7 @@ class SharedEncoder(nn.Module):
             d_model *= 2
             self.blocks += [EncoderBlock(d_model, stride=stride)]
         
-        self.blocks = nn.Sequential(*self.block)
+        self.blocks = nn.Sequential(*self.blocks)
         self.d_model = d_model
 
     def forward(self, x):
@@ -67,6 +67,7 @@ class SemanticHead(nn.Module):
         super().__init__()
 
         self.pre_conv = []
+        self.strides = strides
         for i, stride in enumerate(strides):
             in_dim = d_model
             if i == (len(strides)-1)//2:
@@ -108,35 +109,15 @@ class SemanticHead(nn.Module):
         x: [B, C, T] from shared encoder
         returns: [B, proj_dim, T'] for semantic VQ
         """
-        x = self.pre_conv(x)        # [B, C, T/64]
-        x = x.transpose(1, 2)       # [B, T, C]
+        x = self.pre_conv(x)        # [B, 256, T/8]->[B, 512, T/320]
+        x = x.transpose(1, 2)       # [B, T/320, C]
 
         for layer in self.transformer_layers:
-            x, _ = layer(x)         # [B, T, C]
+            x, _ = layer(x)         # [B, T/320, C]
 
         x = self.project(x)         # [B, proj_dim, T]
         return x
 
-
-class DecoderBlock(nn.Module):
-    def __init__(self, input_dim: int = 16, output_dim: int = 8, stride: int = 1):
-        super().__init__()
-        self.block = nn.Sequential(
-            Snake1d(input_dim),
-            WNConvTranspose1d(
-                input_dim,
-                output_dim,
-                kernel_size=2 * stride,
-                stride=stride,
-                padding=math.ceil(stride / 2),
-            ),
-            ResidualUnit(output_dim, dilation=1),
-            ResidualUnit(output_dim, dilation=3),
-            ResidualUnit(output_dim, dilation=9),
-        )
-
-    def forward(self, x):
-        return self.block(x)
 
 class FiLMGenerator(nn.Module):
     def __init__(self, in_dim, out_dim, hidden_dim=128, kernel_size=3, depth=2, strides = []):
@@ -149,9 +130,12 @@ class FiLMGenerator(nn.Module):
         self.shared_net = nn.Sequential(*layers)
         
         if len(strides) > 0:
-            upsample_layers = [nn.ConvTranspose1d(
-                hidden_dim, hidden_dim, kernel_size=stride*2, stride=stride, padding = stride//2
-                ) for stride in strides]
+            upsample_layers = []
+            for stride in strides:
+                upsample_layers.append(nn.ConvTranspose1d(
+                    hidden_dim, hidden_dim, kernel_size=stride*2, stride=stride, padding=stride//2
+                ))
+                upsample_layers.append(nn.ReLU())
             self.upsample = nn.Sequential(*upsample_layers)
         else:
             self.upsample = nn.Identity()
@@ -245,7 +229,7 @@ class DiscoDAC(BaseModel, CodecMixin):
             latent_dim = encoder_dim * (2 ** len(encoder_rates))
         self.latent_dim = latent_dim
 
-        self.hop_length = np.prod(encoder_rates)
+        self.hop_length = np.prod(encoder_rates[0] + encoder_rates[1])
         self.enc = SharedEncoder(d_model=encoder_dim, strides=encoder_rates[0])
         self.acs_enc = AcousticHead(d_model=self.enc.d_model, strides=encoder_rates[1], d_latent=self.latent_dim)
         self.sem_enc = SemanticHead(d_model=self.enc.d_model, strides=encoder_rates[2], d_latent=self.latent_dim)
@@ -272,7 +256,8 @@ class DiscoDAC(BaseModel, CodecMixin):
             decoder_rates,
             film_layer_idx= film_layer_idx,
         )
-        self.sample_rate = sample_rate
+        self.proj_sem = nn.Conv1d(latent_dim, 768, kernel_size=1)
+        
         self.apply(init_weights)
 
         self.delay = self.get_delay()
@@ -289,12 +274,13 @@ class DiscoDAC(BaseModel, CodecMixin):
         return audio_data
 
     def encode(self, audio_data: torch.Tensor, n_quantizers: int = None,):
-       
-        enc = self.enc(audio_data)
+        enc = self.enc(audio_data)  # [B, 256, T/8]
 
-        sem_enc = self.sem_enc(enc)
-        acs_enc = self.acs_enc(enc)
-        z_sem, codes_sem, latents_sem, commitment_loss_sem, codebook_loss_sem = self.sem_quantizer(sem_enc)
+        sem_enc = self.sem_enc(enc)  # [B, 512, T/320]
+        acs_enc = self.acs_enc(enc)  # [B, 512, T/320]
+        z_sem, commitment_loss_sem, codebook_loss_sem, codes_sem, latents_sem = self.sem_quantizer(sem_enc)
+        commitment_loss_sem = commitment_loss_sem.mean()
+        codebook_loss_sem = codebook_loss_sem.mean()
         z_acs, codes_acs, latents_acs, commitment_loss_acs, codebook_loss_acs = self.acs_quantizer(acs_enc, n_quantizers)
         return {
             "z_sem": z_sem, "codes_sem": codes_sem, "latents_sem": latents_sem,
@@ -326,8 +312,8 @@ class DiscoDAC(BaseModel, CodecMixin):
         audio_data = self.preprocess(audio_data, sample_rate)
         out = self.encode(audio_data, n_quantizers=n_quantizers)
 
-        e_sem = self.proj_sem(out['z_sem'])
-        x = self.decode(out['z_acs'], out['z_sem'])
+        e_sem = self.proj_sem(out['z_sem'])           # [B, 512, T/320]
+        x = self.decode(out['z_acs'], out['z_sem'])   # [B, 1, T]
 
         out.update({
             "audio": x[..., :length], "e_sem": e_sem

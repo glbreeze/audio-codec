@@ -10,15 +10,15 @@ from torch import nn
 
 from .base import CodecMixin
 from dac.nn.layers import Snake1d
-from dac.nn.layers import WNConv1d
-from dac.nn.layers import WNConvTranspose1d
+from dac.nn.layers import WNConv1d, WNConvTranspose1d, AsymmetricPad1d
 from dac.nn.quantize import ResidualVectorQuantize
 
 
 def init_weights(m):
     if isinstance(m, nn.Conv1d):
         nn.init.trunc_normal_(m.weight, std=0.02)
-        nn.init.constant_(m.bias, 0)
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0)
 
 
 class ResidualUnit(nn.Module):
@@ -43,17 +43,24 @@ class ResidualUnit(nn.Module):
 class EncoderBlock(nn.Module):
     def __init__(self, dim: int = 16, stride: int = 1):
         super().__init__()
+        if stride % 2 == 0:
+            pad_left = pad_right = stride//2
+        else:
+            pad_left = stride//2
+            pad_right = stride//2 + 1
+            
         self.block = nn.Sequential(
             ResidualUnit(dim // 2, dilation=1),
             ResidualUnit(dim // 2, dilation=3),
             ResidualUnit(dim // 2, dilation=9),
             Snake1d(dim // 2),
+            AsymmetricPad1d(pad_left, pad_right),
             WNConv1d(
                 dim // 2,
                 dim,
                 kernel_size=2 * stride,
                 stride=stride,
-                padding=math.ceil(stride / 2),
+                padding=0
             ),
         )
 
@@ -94,14 +101,21 @@ class Encoder(nn.Module):
 class DecoderBlock(nn.Module):
     def __init__(self, input_dim: int = 16, output_dim: int = 8, stride: int = 1):
         super().__init__()
+        if stride % 2 == 0:
+            pad_left = pad_right = stride//2
+        else:
+            pad_left = stride//2 + 1
+            pad_right = stride//2
+            
         self.block = nn.Sequential(
             Snake1d(input_dim),
+            AsymmetricPad1d(pad_left, pad_right),
             WNConvTranspose1d(
                 input_dim,
                 output_dim,
                 kernel_size=2 * stride,
                 stride=stride,
-                padding=math.ceil(stride / 2),
+                padding=0,
             ),
             ResidualUnit(output_dim, dilation=1),
             ResidualUnit(output_dim, dilation=3),

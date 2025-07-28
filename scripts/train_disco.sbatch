@@ -21,6 +21,6 @@ source /ext3/env.sh
 export SSL_CERT_FILE=/scratch/lg154/sseg/fs-ood/cacert.pem
 export CUDA_VISIBLE_DEVICES=0
 
-python scripts/train.py --args.load conf/disco_base.yml --save_path runs/test/
+python scripts/train_disco.py --args.load conf/disco_base.yml --save_path runs/test/
 
 "
