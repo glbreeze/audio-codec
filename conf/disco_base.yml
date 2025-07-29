@@ -43,8 +43,10 @@ lambdas:
   mel/loss: 15.0
   adv/feat_loss: 2.0
   adv/gen_loss: 1.0
-  vq/commitment_loss: 0.25
-  vq/codebook_loss: 1.0
+  vq/commit_loss_acs: 0.25
+  vq/codebook_loss_acs: 1.0
+  vq/commit_loss_sem: 0.25
+  vq/codebook_loss_sem: 1.0
   align/loss: 1.0
 
 VolumeNorm.db: [const, -16]
@@ -89,17 +91,18 @@ AudioDataset.without_replacement: true
 
 train/build_dataset.folders:
   speech_fb:
-    - /vast/lg154/datasets/LibriSpeech/train-clean-100
+    - /home/asus/Research/datasets/LibriSpeech/train-clean-100
 
 val/build_dataset.folders:
   speech_fb:
-    - /vast/lg154/datasets/LibriSpeech/test-clean
+    - /home/asus/Research/datasets/LibriSpeech/test-clean
 test/build_dataset.folders:
   speech_fb:
-    - /vast/lg154/datasets/LibriSpeech/test-clean
+    - /home/asus/Research/datasets/LibriSpeech/test-clean
   
 batch_size: 12
 val_batch_size: 12
 num_workers: 4
+hubert_layer: 9
 exp_name: baseline
 

@@ -235,11 +235,11 @@ def val_loop(batch, state, accel):
 
 
 @timer()
-def train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor):
+def train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor, hubert_layer=12):
     state.generator.train()
     state.discriminator.train()
     output = {}
-
+    
     audio_data = batch["signal"].audio_data 
     with torch.no_grad():
         inputs_values = hubert_processor(
@@ -247,7 +247,10 @@ def train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor):
             sampling_rate=16000, return_tensors="pt", padding=False # already padded in batch processing
             ).input_values
         
-        hubert_emb = hubert_model(inputs_values.half().cuda()).last_hidden_state
+        hubert_emb = hubert_model(
+            inputs_values.half().cuda(), output_hidden_states=True
+            ).hidden_states
+        hubert_emb = hubert_emb[hubert_layer]
     
     del inputs_values
     torch.cuda.empty_cache()
@@ -277,9 +280,9 @@ def train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor):
 
     #  ======== update generator ========= 
     with accel.autocast():
-        output["stft/loss"] = state.stft_loss(recons, signal)
+        output["stft/loss"] = state.stft_loss(recons, signal)          # did not use 
+        output["waveform/loss"] = state.waveform_loss(recons, signal)  # did not use 
         output["mel/loss"] = state.mel_loss(recons, signal)
-        output["waveform/loss"] = state.waveform_loss(recons, signal)
         output["adv/gen_loss"], output["adv/feat_loss"] = state.gan_loss.generator_loss(recons, signal)
         output["vq/commit_loss_acs"] = out["vq/commit_loss_acs"]
         output["vq/commit_loss_sem"] = out["vq/commit_loss_sem"]
@@ -287,6 +290,7 @@ def train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor):
         output["vq/codebook_loss_sem"] = out["vq/codebook_loss_sem"]
         hubert_aligned = F.interpolate(hubert_emb.transpose(1, 2), size=out["e_sem"].shape[-1], mode="linear", align_corners=False)
         output["align/loss"] = state.align_loss(out["e_sem"], hubert_aligned.float())
+
         output["loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
         
     state.optimizer_g.zero_grad()
@@ -398,7 +402,6 @@ def train(
         'align/loss': 1.0
     },
 ):
-    import pdb; pdb.set_trace()
     if accel.local_rank == 0:
         wandb.login()
         os.environ["WANDB_MODE"] = "online"
@@ -447,7 +450,7 @@ def train(
     checkpoint = when(lambda: accel.local_rank == 0)(checkpoint)
 
     for step, batch in enumerate(train_dataloader, start=state.step):
-        metrics = train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor)
+        metrics = train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor, hubert_layer=args['hubert_layer'])
         metrics = {f"train/{k}": (v.item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
         if accel.local_rank == 0 and step % 50 ==0:
             wandb.log(metrics, step=state.step)

@@ -139,10 +139,11 @@ class FiLMGenerator(nn.Module):
                     pad_left = stride//2 + 1
                     pad_right = stride//2
                 
-                upsample_layers.append(
+                upsample_layers.extend([
                     AsymmetricPad1d(pad_left, pad_right),
                     nn.ConvTranspose1d(hidden_dim, hidden_dim, kernel_size=stride*2, stride=stride, padding=0),
-                    nn.ReLU())
+                    nn.ReLU()
+                    ])
             self.upsample = nn.Sequential(*upsample_layers)
         else:
             self.upsample = nn.Identity()
@@ -263,7 +264,12 @@ class DiscoDAC(BaseModel, CodecMixin):
             decoder_rates,
             film_layer_idx= film_layer_idx,
         )
-        self.proj_sem = nn.Conv1d(latent_dim, 768, kernel_size=1)
+        
+        self.proj_sem = nn.Sequential(
+            nn.Conv1d(latent_dim, latent_dim, kernel_size=1),  # or Linear if shape is [B, T, D]
+            nn.GELU(),
+            nn.Conv1d(latent_dim, 768, kernel_size=1)
+        )
         
         self.apply(init_weights)
 
