@@ -258,13 +258,12 @@ def train_loop(state, batch, accel, lambdas):
     accel.step(state.optimizer_d)
     state.scheduler_d.step()
 
-    import pdb; pdb.set_trace()
     with accel.autocast():
         output["stft/loss"] = state.stft_loss(recons, signal)
         output["mel/loss"] = state.mel_loss(recons, signal)
         output["waveform/loss"] = state.waveform_loss(recons, signal)
         (
-            output["adv/gen_loss"],
+            output["adv/gens_loss"],
             output["adv/feat_loss"],
         ) = state.gan_loss.generator_loss(recons, signal)
         output["vq/commitment_loss"] = commitment_loss
@@ -307,14 +306,14 @@ def checkpoint(state, save_iters, save_path, tracker):
         }
         accel.unwrap(state.generator).metadata = metadata
         accel.unwrap(state.generator).save_to_folder(
-            f"{save_path}/{tag}", generator_extra
+            f"{save_path}/{tag}", generator_extra, package=False
         )
         discriminator_extra = {
             "optimizer.pth": state.optimizer_d.state_dict(),
             "scheduler.pth": state.scheduler_d.state_dict(),
         }
         accel.unwrap(state.discriminator).save_to_folder(
-            f"{save_path}/{tag}", discriminator_extra
+            f"{save_path}/{tag}", discriminator_extra, package=False
         )
 
 

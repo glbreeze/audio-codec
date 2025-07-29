@@ -401,13 +401,15 @@ def train(
         "vq/codebook_loss": 1.0,
         'align/loss': 1.0
     },
+    exp_name: str = "baseline",
+    hubert_layer: int = 12,
 ):
     if accel.local_rank == 0:
         wandb.login()
         os.environ["WANDB_MODE"] = "online"
         # os.environ["WANDB_CACHE_DIR"] = "/scratch/lg154/sseg/.cache/wandb"
         # os.environ["WANDB_CONFIG_DIR"] = "/scratch/lg154/sseg/.config/wandb"
-        wandb.init(project="audio_codec", config=namespace_to_dict(args), name=args['exp_name'])
+        wandb.init(project="audio_codec", config=namespace_to_dict(args), name=exp_name)
 
     util.seed(seed)
     Path(save_path).mkdir(exist_ok=True, parents=True)
@@ -450,7 +452,7 @@ def train(
     checkpoint = when(lambda: accel.local_rank == 0)(checkpoint)
 
     for step, batch in enumerate(train_dataloader, start=state.step):
-        metrics = train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor, hubert_layer=args['hubert_layer'])
+        metrics = train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor, hubert_layer=hubert_layer)
         metrics = {f"train/{k}": (v.item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
         if accel.local_rank == 0 and step % 50 ==0:
             wandb.log(metrics, step=state.step)

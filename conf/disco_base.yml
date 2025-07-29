@@ -13,7 +13,7 @@ DiscoDAC.codebook_dim: 8
 DiscoDAC.quantizer_dropout: 1.0
 
 # Discriminator
-Discriminator.sample_rate: 44100
+Discriminator.sample_rate: 16000
 Discriminator.rates: []
 Discriminator.periods: [2, 3, 5, 7, 11]
 Discriminator.fft_sizes: [2048, 1024, 512]
@@ -91,14 +91,14 @@ AudioDataset.without_replacement: true
 
 train/build_dataset.folders:
   speech_fb:
-    - /home/asus/Research/datasets/LibriSpeech/train-clean-100
+    - /vast/lg154/datasets/LibriSpeech/train-clean-100
 
 val/build_dataset.folders:
   speech_fb:
-    - /home/asus/Research/datasets/LibriSpeech/test-clean
+    - /vast/lg154/datasets/LibriSpeech/test-clean
 test/build_dataset.folders:
   speech_fb:
-    - /home/asus/Research/datasets/LibriSpeech/test-clean
+    - /vast/lg154/datasets/LibriSpeech/test-clean
   
 batch_size: 12
 val_batch_size: 12

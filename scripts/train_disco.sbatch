@@ -9,8 +9,9 @@
 #SBATCH --gres=gpu
 #SBATCH --partition=a100_1,a100_2,h100_1,v100,rtx8000
 
-LAYER=$1
+FILM=$1
 ALIGN=$2
+HBT=$3
 
 # Singularity path
 ext3_path=/scratch/$USER/python11/overlay-25GB-500K.ext3
@@ -24,7 +25,7 @@ source /ext3/env.sh
 export SSL_CERT_FILE=/scratch/lg154/sseg/cacert.pem
 export CUDA_VISIBLE_DEVICES=0
 
-python scripts/train_disco.py --args.load conf/disco_base.yml --save_path runs/libri_film${LAYER}_align${ALIGN}/ \
-    --lambdas.align/loss ${ALIGN} --DiscoDAC.film_layer_idx ${LAYER} --exp_name film${LAYER}_align${ALIGN}
+python scripts/train_disco.py --args.load conf/disco_base.yml --save_path runs/libri_film${FILM}_align${ALIGN}_hbt${HBT}/ \
+    --lambdas.align/loss ${ALIGN} --DiscoDAC.film_layer_idx ${FILM} --exp_name film${LAYER}_align${ALIGN} --hubert_layer ${HBT}
 
 "
