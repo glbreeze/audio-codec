@@ -17,6 +17,15 @@ def WNConvTranspose1d(*args, **kwargs):
     return weight_norm(nn.ConvTranspose1d(*args, **kwargs))
 
 
+class AsymmetricPad1d(nn.Module):
+    def __init__(self, pad_left: int, pad_right: int):
+        super().__init__()
+        self.padding = (pad_left, pad_right)
+
+    def forward(self, x):
+        return F.pad(x, self.padding)
+
+
 # Scripting this brings model speed up 1.4x
 @torch.jit.script
 def snake(x, alpha):

@@ -1,19 +1,18 @@
 # Model setup
-DiscoDAC.sample_rate: 16000
-DiscoDAC.encoder_dim: 64
-DiscoDAC.encoder_rates: [[2, 4], [5, 8], [2, 2, 2, 5]]
-DiscoDAC.decoder_dim: 1536
-DiscoDAC.decoder_rates: [8, 5, 4, 2]
-DiscoDAC.film_layer_idx: 1
+DAC.sample_rate: 16000
+DAC.encoder_dim: 64
+DAC.encoder_rates: [2, 4, 5, 8]
+DAC.decoder_dim: 1536
+DAC.decoder_rates: [8, 5, 4, 2]
 
 # Quantization
-DiscoDAC.n_codebooks: 9
-DiscoDAC.codebook_size: 1024
-DiscoDAC.codebook_dim: 8
-DiscoDAC.quantizer_dropout: 1.0
+DAC.n_codebooks: 9
+DAC.codebook_size: 1024
+DAC.codebook_dim: 8
+DAC.quantizer_dropout: 1.0
 
 # Discriminator
-Discriminator.sample_rate: 16000
+Discriminator.sample_rate: 44100
 Discriminator.rates: []
 Discriminator.periods: [2, 3, 5, 7, 11]
 Discriminator.fft_sizes: [2048, 1024, 512]
@@ -43,11 +42,8 @@ lambdas:
   mel/loss: 15.0
   adv/feat_loss: 2.0
   adv/gen_loss: 1.0
-  vq/commit_loss_acs: 0.25
-  vq/codebook_loss_acs: 1.0
-  vq/commit_loss_sem: 0.25
-  vq/codebook_loss_sem: 1.0
-  align/loss: 1.0
+  vq/commitment_loss: 0.25
+  vq/codebook_loss: 1.0
 
 VolumeNorm.db: [const, -16]
 
@@ -71,7 +67,6 @@ MelSpectrogramLoss.mel_fmax: [null, null, null, null, null, null, null]
 MelSpectrogramLoss.pow: 1.0
 MelSpectrogramLoss.clamp_eps: 1.0e-5
 MelSpectrogramLoss.mag_weight: 0.0
-SemanticEmbedLoss.loss_type: l2
 
 # Data
 batch_size: 72
@@ -99,10 +94,7 @@ val/build_dataset.folders:
 test/build_dataset.folders:
   speech_fb:
     - /vast/lg154/datasets/LibriSpeech/test-clean
-  
+
 batch_size: 12
 val_batch_size: 12
 num_workers: 4
-hubert_layer: 9
-exp_name: baseline
-

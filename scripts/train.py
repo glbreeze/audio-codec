@@ -266,7 +266,7 @@ def train_loop(state, batch, accel, lambdas):
         output["mel/loss"] = state.mel_loss(recons, signal)
         output["waveform/loss"] = state.waveform_loss(recons, signal)
         (
-            output["adv/gen_loss"],
+            output["adv/gens_loss"],
             output["adv/feat_loss"],
         ) = state.gan_loss.generator_loss(recons, signal)
         output["vq/commitment_loss"] = commitment_loss

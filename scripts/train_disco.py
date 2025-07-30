@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import argparse
 from types import SimpleNamespace
+from torch.package import PackageExporter
 
 import argbind
 import torch
@@ -22,7 +23,7 @@ from audiotools.ml.decorators import timer
 from audiotools.ml.decorators import Tracker
 from audiotools.ml.decorators import when
 from torch.utils.tensorboard import SummaryWriter
-from transformers import HubertModel, Wav2Vec2Processor
+from transformers import HubertModel, Wav2Vec2Processor, Wav2Vec2FeatureExtractor
 
 import dac
 
@@ -195,6 +196,7 @@ def load(
     stft_loss = losses.MultiScaleSTFTLoss()
     mel_loss = losses.MelSpectrogramLoss()
     gan_loss = losses.GANLoss(discriminator)
+    align_loss = losses.SemanticEmbeddingLoss()
 
     return State(
         generator=generator,
@@ -209,6 +211,7 @@ def load(
         gan_loss=gan_loss,
         train_data=train_data,
         val_data=val_data,
+        align_loss=align_loss,
     )
 
 @timer()
@@ -232,11 +235,26 @@ def val_loop(batch, state, accel):
 
 
 @timer()
-def train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor):
+def train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor, hubert_layer=12):
     state.generator.train()
     state.discriminator.train()
     output = {}
-
+    
+    audio_data = batch["signal"].audio_data 
+    with torch.no_grad():
+        inputs_values = hubert_processor(
+            audio_data.squeeze(1).numpy(), 
+            sampling_rate=16000, return_tensors="pt", padding=False # already padded in batch processing
+            ).input_values
+        
+        hubert_emb = hubert_model(
+            inputs_values.half().cuda(), output_hidden_states=True
+            ).hidden_states
+        hubert_emb = hubert_emb[hubert_layer]
+    
+    del inputs_values
+    torch.cuda.empty_cache()
+       
     batch = util.prepare_batch(batch, accel.device)
     with torch.no_grad():
         signal = state.train_data.transform(
@@ -246,12 +264,6 @@ def train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor):
     with accel.autocast():
         out = state.generator(signal.audio_data, signal.sample_rate)
         recons = AudioSignal(out["audio"], signal.sample_rate)
-    
-    with torch.no_grad():
-        inputs = hubert_processor([x for x in out["audio"]], sampling_rate=16000, return_tensors="pt", padding=True)
-        input_values = inputs.input_values.cuda()
-        outputs = hubert_model(input_values)
-        hubert_emb = outputs.last_hidden_state  # Shape: [B, T, D]
 
     # ======== update discriminator  ======== 
     with accel.autocast():
@@ -268,17 +280,19 @@ def train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor):
 
     #  ======== update generator ========= 
     with accel.autocast():
-        output["stft/loss"] = state.stft_loss(recons, signal)
+        output["stft/loss"] = state.stft_loss(recons, signal)          # did not use 
+        output["waveform/loss"] = state.waveform_loss(recons, signal)  # did not use 
         output["mel/loss"] = state.mel_loss(recons, signal)
-        output["waveform/loss"] = state.waveform_loss(recons, signal)
         output["adv/gen_loss"], output["adv/feat_loss"] = state.gan_loss.generator_loss(recons, signal)
         output["vq/commit_loss_acs"] = out["vq/commit_loss_acs"]
         output["vq/commit_loss_sem"] = out["vq/commit_loss_sem"]
         output["vq/codebook_loss_acs"] = out["vq/codebook_loss_acs"]
         output["vq/codebook_loss_sem"] = out["vq/codebook_loss_sem"]
-        output["align/loss"] = state.align_loss(out["e_sem"], hubert_emb)
-        output["loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
+        hubert_aligned = F.interpolate(hubert_emb.transpose(1, 2), size=out["e_sem"].shape[-1], mode="linear", align_corners=False)
+        output["align/loss"] = state.align_loss(out["e_sem"], hubert_aligned.float())
 
+        output["loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
+        
     state.optimizer_g.zero_grad()
     accel.backward(output["loss"])
     accel.scaler.unscale_(state.optimizer_g)
@@ -313,17 +327,16 @@ def checkpoint(state, save_iters, save_path, tracker):
             "tracker-pth": tracker.state_dict(),
             "metadata.pth": metadata,
         }
-        accel.unwrap(state.generator).metadata = metadata
-        accel.unwrap(state.generator).save_to_folder(
-            f"{save_path}/{tag}", generator_extra
-        )
+        generator = accel.unwrap(state.generator)
+        generator.metadata = metadata
+        generator.save_to_folder(f"{save_path}/{tag}", generator_extra, package=False)
+        
         discriminator_extra = {
             "optimizer.pth": state.optimizer_d.state_dict(),
             "scheduler.pth": state.scheduler_d.state_dict(),
         }
-        accel.unwrap(state.discriminator).save_to_folder(
-            f"{save_path}/{tag}", discriminator_extra
-        )
+        discriminator = accel.unwrap(state.discriminator)
+        discriminator.save_to_folder(f"{save_path}/{tag}", discriminator_extra, package=False)
 
 
 @torch.no_grad()
@@ -388,7 +401,15 @@ def train(
         "vq/codebook_loss": 1.0,
         'align/loss': 1.0
     },
+    exp_name: str = "baseline",
+    hubert_layer: int = 12,
 ):
+    if accel.local_rank == 0:
+        wandb.login()
+        os.environ["WANDB_MODE"] = "online"
+        # os.environ["WANDB_CACHE_DIR"] = "/scratch/lg154/sseg/.cache/wandb"
+        # os.environ["WANDB_CONFIG_DIR"] = "/scratch/lg154/sseg/.config/wandb"
+        wandb.init(project="audio_codec", config=namespace_to_dict(args), name=exp_name)
 
     util.seed(seed)
     Path(save_path).mkdir(exist_ok=True, parents=True)
@@ -411,12 +432,13 @@ def train(
         persistent_workers=True if num_workers > 0 else False,
     )
     
+    hubert_processor = Wav2Vec2FeatureExtractor.from_pretrained("facebook/hubert-base-ls960")
     hubert_model = HubertModel.from_pretrained(
         "facebook/hubert-base-ls960", 
         torch_dtype=torch.float16, 
-        attn_implementation="flash_attention_2")
-    hubert_processor = Wav2Vec2Processor.from_pretrained("facebook/hubert-base-ls960")
-    
+        #attn_implementation="flash_attention_2",
+        ).cuda()
+    hubert_model.eval()
 
     # Wrap the functions so that they neatly track in TensorBoard + progress bars
     # and only run when specific conditions are met.
@@ -430,7 +452,7 @@ def train(
     checkpoint = when(lambda: accel.local_rank == 0)(checkpoint)
 
     for step, batch in enumerate(train_dataloader, start=state.step):
-        metrics = train_loop(state, batch, accel, lambdas, hubert_model)
+        metrics = train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor, hubert_layer=hubert_layer)
         metrics = {f"train/{k}": (v.item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
         if accel.local_rank == 0 and step % 50 ==0:
             wandb.log(metrics, step=state.step)
@@ -463,13 +485,6 @@ if __name__ == "__main__":
     args["args.debug"] = int(os.getenv("LOCAL_RANK", 0)) == 0
     with argbind.scope(args):
         with Accelerator() as accel:
-            if accel.local_rank == 0:
-                wandb.login()
-                os.environ["WANDB_MODE"] = "online"
-                os.environ["WANDB_CACHE_DIR"] = "/scratch/lg154/sseg/.cache/wandb"
-                os.environ["WANDB_CONFIG_DIR"] = "/scratch/lg154/sseg/.config/wandb"
-                wandb.init(project="audio_codec", config=namespace_to_dict(args), name='baseline')
-
             if accel.local_rank != 0:
                 sys.tracebacklimit = 0
             train(args, accel)
