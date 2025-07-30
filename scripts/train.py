@@ -211,6 +211,7 @@ def load(
 @timer()
 @torch.no_grad()
 def val_loop(batch, state, accel):
+    state.generator = state.generator.to(accel.device)
     state.generator.eval()
     batch = util.prepare_batch(batch, accel.device)
     signal = state.val_data.transform(
@@ -230,6 +231,8 @@ def val_loop(batch, state, accel):
 
 @timer()
 def train_loop(state, batch, accel, lambdas):
+    state.generator = state.generator.to(accel.device)
+    state.discriminator = state.discriminator.to(accel.device)
     state.generator.train()
     state.discriminator.train()
     output = {}
@@ -298,22 +301,28 @@ def checkpoint(state, save_iters, save_path, tracker):
         tags.append(f"{state.step // 1000}k")
 
     for tag in tags:
-        generator_extra = {
+        gen_extra = {
             "optimizer.pth": state.optimizer_g.state_dict(),
             "scheduler.pth": state.scheduler_g.state_dict(),
-            "tracker-pth": tracker.state_dict(),
+            "tracker.pth": tracker.state_dict(),   # ← 顺带把文件名统一
             "metadata.pth": metadata,
         }
-        accel.unwrap(state.generator).metadata = metadata
-        accel.unwrap(state.generator).save_to_folder(
-            f"{save_path}/{tag}", generator_extra
+
+        gen = accel.unwrap(state.generator).cpu()   # 建议先搬到 CPU
+        gen.save_to_folder(
+            f"{save_path}/{tag}",
+            gen_extra,
+            package=False   # ← 关键改动：禁用 PackageExporter
         )
-        discriminator_extra = {
+
+        disc_extra = {
             "optimizer.pth": state.optimizer_d.state_dict(),
             "scheduler.pth": state.scheduler_d.state_dict(),
         }
-        accel.unwrap(state.discriminator).save_to_folder(
-            f"{save_path}/{tag}", discriminator_extra
+        accel.unwrap(state.discriminator).cpu().save_to_folder(
+            f"{save_path}/{tag}",
+            disc_extra,
+            package=False   # ← 关键改动
         )
 
 
@@ -453,6 +462,6 @@ if __name__ == "__main__":
                 os.environ["WANDB_CONFIG_DIR"] = "/scratch/lg154/sseg/.config/wandb"
                 wandb.init(project="audio_codec", config=namespace_to_dict(args), name='baseline')
 
-            if accel.local_rank != 0:
-                sys.tracebacklimit = 0
+            #if accel.local_rank != 0:
+                #sys.tracebacklimit = 0
             train(args, accel)
