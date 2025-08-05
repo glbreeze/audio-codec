@@ -24,8 +24,11 @@ singularity exec --nv --overlay /scratch/lg154/python11/overlay-25GB-500K.ext3:r
 source /ext3/env.sh
 export SSL_CERT_FILE=/scratch/lg154/sseg/cacert.pem
 export CUDA_VISIBLE_DEVICES=0
+export NUMBA_DISABLE_CACHE=1
 
-python scripts/train_disco.py --args.load conf/disco_base.yml --save_path runs/libri_film${FILM}_align${ALIGN}_hbt${HBT}/ \
-    --lambdas.align/loss ${ALIGN} --DiscoDAC.film_layer_idx ${FILM} --exp_name film${LAYER}_align${ALIGN} --hubert_layer ${HBT}
+python scripts/train_disco.py --args.load conf/disco_base.yml --lambdas.align/loss ${ALIGN} \
+    --DiscoDAC.film_layer_idx ${FILM} --hubert_layer ${HBT} \
+    --save_path runs/libri6_film${FILM}_align${ALIGN}_hbt${HBT}/ \
+    --exp_name cb6_film${FILM}_align${ALIGN}_hbt${HBT} 
 
 "

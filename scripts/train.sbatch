@@ -21,6 +21,7 @@ source /ext3/env.sh
 export SSL_CERT_FILE=/scratch/lg154/sseg/fs-ood/cacert.pem
 export CUDA_VISIBLE_DEVICES=0
 
-python scripts/train.py --args.load conf/libri_base.yml --save_path runs/libri_baseline/
-
+python scripts/train.py --args.load conf/libri_base.yml \
+    --save_path runs/libri6_baseline/ \
+    --exp_name cb6_baseline
 "

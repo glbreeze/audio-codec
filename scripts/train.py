@@ -378,8 +378,15 @@ def train(
         "vq/commitment_loss": 0.25,
         "vq/codebook_loss": 1.0,
     },
+    exp_name = 'baseline',
 ):
-
+    if accel.local_rank == 0:
+        wandb.login()
+        os.environ["WANDB_MODE"] = "online"
+        os.environ["WANDB_CACHE_DIR"] = "/scratch/lg154/sseg/.cache/wandb"
+        os.environ["WANDB_CONFIG_DIR"] = "/scratch/lg154/sseg/.config/wandb"
+        wandb.init(project="audio_codec", config=namespace_to_dict(args), name=exp_name)
+                
     util.seed(seed)
     Path(save_path).mkdir(exist_ok=True, parents=True)
     
@@ -446,13 +453,6 @@ if __name__ == "__main__":
     args["args.debug"] = int(os.getenv("LOCAL_RANK", 0)) == 0
     with argbind.scope(args):
         with Accelerator() as accel:
-            if accel.local_rank == 0:
-                wandb.login()
-                os.environ["WANDB_MODE"] = "online"
-                os.environ["WANDB_CACHE_DIR"] = "/scratch/lg154/sseg/.cache/wandb"
-                os.environ["WANDB_CONFIG_DIR"] = "/scratch/lg154/sseg/.config/wandb"
-                wandb.init(project="audio_codec", config=namespace_to_dict(args), name='baseline')
-
             if accel.local_rank != 0:
                 sys.tracebacklimit = 0
             train(args, accel)
