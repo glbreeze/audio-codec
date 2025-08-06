@@ -1,6 +1,9 @@
 import os
 import sys
 import wandb
+import numpy as np
+from pesq import pesq
+from pystoi import stoi
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +29,7 @@ from torch.utils.tensorboard import SummaryWriter
 from transformers import HubertModel, Wav2Vec2Processor, Wav2Vec2FeatureExtractor
 
 import dac
+from utils import si_snr
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -216,7 +220,7 @@ def load(
 
 @timer()
 @torch.no_grad()
-def val_loop(batch, state, accel):
+def val_loop(batch, state, accel, final_val=False):
     state.generator.eval()
     batch = util.prepare_batch(batch, accel.device)
     signal = state.val_data.transform(
@@ -225,13 +229,24 @@ def val_loop(batch, state, accel):
 
     out = state.generator(signal.audio_data, signal.sample_rate)
     recons = AudioSignal(out["audio"], signal.sample_rate)
-
-    return {
+    metrics = {
         "loss": state.mel_loss(recons, signal),
         "mel/loss": state.mel_loss(recons, signal),
         "stft/loss": state.stft_loss(recons, signal),
         "waveform/loss": state.waveform_loss(recons, signal),
+        "si_snr": si_snr(recons.audio_data.squeeze(1), signal.audio_data.squeeze(1)),
     }
+    if final_val:
+        pesq_scores, stoi_scores = np.zeros(len(signal.audio_data)), np.zeros(len(signal.audio_data))
+        for i in range(len(signal.audio_data)):
+            ref_np = signal.audio_data[i].squeeze().cpu().numpy()
+            est_np = recons.audio_data[i].squeeze().cpu().numpy()
+            pesq_scores[i] = pesq(signal.sample_rate, ref_np, est_np, mode="wb")
+            stoi_scores[i] = stoi(ref_np, est_np, signal.sample_rate, extended=False)
+            
+        metrics["pesq"] = pesq_scores.mean().item()
+        metrics["stoi"] = stoi_scores.mean().item()
+    return metrics
 
 
 @timer()
@@ -369,9 +384,9 @@ def save_samples(state, val_idx, save_path):
             torchaudio.save(filename, audio_sample.audio_data[0], audio_sample.sample_rate)
 
 
-def validate(state, val_dataloader, accel):
+def validate(state, val_dataloader, accel, final_val):
     for batch in val_dataloader:
-        output = val_loop(batch, state, accel)
+        output = val_loop(batch, state, accel, final_val=final_val)
     # Consolidate state dicts if using ZeroRedundancyOptimizer
     if hasattr(state.optimizer_g, "consolidate_state_dict"):
         state.optimizer_g.consolidate_state_dict()
@@ -464,7 +479,7 @@ def train(
             save_samples(state, val_idx, save_path)
 
         if step % valid_freq == 0 or last_iter:
-            validate(state, val_dataloader, accel)
+            validate(state, val_dataloader, accel, final_val=step%(20*valid_freq)==0)
             if accel.local_rank == 0:
                 val_metrics = {
                     f"val/{k}": float(v())  # returns a float, guaranteed

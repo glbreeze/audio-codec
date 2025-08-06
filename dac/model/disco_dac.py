@@ -161,7 +161,7 @@ class FiLMGenerator(nn.Module):
 
 class Decoder(nn.Module):
     def __init__(self, input_channel, channels, rates, d_out = 1, 
-                 film_layer_idx=1,):
+                 film_layers_idx=[1],):
         super().__init__()
 
         # Add first conv layer
@@ -182,16 +182,17 @@ class Decoder(nn.Module):
         )
 
         # FiLM layer
-        self.film_layer_idx = film_layer_idx
-        self.film_channels = channels // 2 ** film_layer_idx
-        self.film = FiLMGenerator(in_dim = input_channel, out_dim=self.film_channels, strides=rates[0:film_layer_idx])
+        self.film_layers_idx = film_layers_idx
+        self.films = nn.ModuleDict()
+        for film_idx in self.film_layers_idx:
+            film_channels = channels // 2 ** film_idx
+            self.films[str(film_idx)] = FiLMGenerator(in_dim = input_channel, out_dim=film_channels, strides=rates[0:film_idx])
 
     def forward(self, z_acs, z_sem):
-        gamma, beta = self.film(z_sem) # [B, D, T]
-
         z = self.pre_conv(z_acs)
 
-        if self.film_layer_idx == 0:
+        if 0 in self.film_layers_idx:
+            gamma, beta = self.films["0"](z_sem) # [B, D, T]
             if gamma.shape[-1] != z.shape[-1]:
                 gamma = F.interpolate(gamma, size=z.shape[-1], mode='nearest')
                 beta = F.interpolate(beta, size=z.shape[-1], mode='nearest')
@@ -199,7 +200,8 @@ class Decoder(nn.Module):
 
         for i, layer in enumerate(self.layers):
             z = layer(z)
-            if i + 1 == self.film_layer_idx:
+            if i + 1 in self.film_layers_idx:
+                gamma, beta = self.films[str(i+1)](z_sem)
                 if gamma.shape[-1] != z.shape[-1]:
                     gamma = F.interpolate(gamma, size=z.shape[-1], mode='nearest')
                     beta = F.interpolate(beta, size=z.shape[-1], mode='nearest')
@@ -223,7 +225,7 @@ class DiscoDAC(BaseModel, CodecMixin):
         sem_codebook_size=512,
         quantizer_dropout: bool = False,
         sample_rate: int = 44100,
-        film_layer_idx: int = 1,
+        film_layer_idx: list = [1],
     ):
         super().__init__()
 
@@ -262,7 +264,7 @@ class DiscoDAC(BaseModel, CodecMixin):
             latent_dim,
             decoder_dim,
             decoder_rates,
-            film_layer_idx= film_layer_idx,
+            film_layers_idx= film_layer_idx,
         )
         
         self.proj_sem = nn.Sequential(

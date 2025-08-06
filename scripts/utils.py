@@ -2,23 +2,19 @@ import torch
 import argparse
 from types import SimpleNamespace
 
-class MeanAverager:
-    def __init__(self):
-        self.sums = {}
-        self.count = 0
-
-    def update(self, metrics: dict):
-        for k, v in metrics.items():
-            v = v.item() if torch.is_tensor(v) else v
-            if k not in self.sums:
-                self.sums[k] = 0.0
-            self.sums[k] += v
-        self.count += 1
-
-    def average(self):
-        return {k: v / self.count for k, v in self.sums.items()} if self.count > 0 else {}
-
-def namespace_to_dict(ns):
-    if isinstance(ns, (SimpleNamespace, argparse.Namespace)):
-        return {k: namespace_to_dict(v) for k, v in vars(ns).items()}
-    return ns
+def si_snr(est, ref, epsilon=1e-8):
+    
+    est = est - est.mean(dim=1, keepdim=True)
+    ref = ref - ref.mean(dim=1, keepdim=True)
+    
+    ref_pow = (ref * ref).mean(dim=1, keepdim=True) # [B, 1]
+    mix_pow = (est * ref).mean(dim=1, keepdim=True) # [B, 1]
+    scale = mix_pow / (ref_pow + epsilon)
+    
+    scaled_ref = scale * ref # [B, D]
+    error = est - scaled_ref # [B, D]
+    
+    si_snr = 10 * torch.log10((scaled_ref * scaled_ref).mean(dim=1) + epsilon) - \
+             10 * torch.log10((error * error).mean(dim=1) + epsilon)
+ 
+    return si_snr.mean().item()
