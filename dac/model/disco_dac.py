@@ -119,94 +119,158 @@ class SemanticHead(nn.Module):
         return x
 
 
+# =====================================================================
+# ---------------------------- FiLM 模块 -------------------------------
+# =====================================================================
+
 class FiLMGenerator(nn.Module):
-    def __init__(self, in_dim, out_dim, hidden_dim=128, kernel_size=3, depth=2, strides = []):
+    """
+    根据语义向量 z_sem 生成 (γ, β)。可选 AdaLN-Zero 初始化：γ,β 初始全 0。
+    """
+    def __init__(
+        self,
+        in_dim: int,
+        out_dim: int,
+        hidden_dim: int = 128,
+        kernel_size: int = 3,
+        depth: int = 2,
+        strides: list = None,
+        zero_init: bool = True,
+    ):
         super().__init__()
+        strides = strides or []
+
+        # 1) shared conv 堆栈
         layers = []
         for i in range(depth):
             dim_in = in_dim if i == 0 else hidden_dim
-            layers.append(nn.Conv1d(dim_in, hidden_dim, kernel_size, padding=kernel_size//2))
+            layers.append(
+                nn.Conv1d(dim_in, hidden_dim, kernel_size, padding=kernel_size // 2)
+            )
             layers.append(nn.ReLU())
         self.shared_net = nn.Sequential(*layers)
-        
+
+        # 2) 时域上采样，使其时间轴与 target 层一致
         if len(strides) > 0:
             upsample_layers = []
             for stride in strides:
-                
-                if stride % 2 == 0:
-                    pad_left = pad_right = stride//2
-                else:
-                    pad_left = stride//2 + 1
-                    pad_right = stride//2
-                
-                upsample_layers.extend([
-                    AsymmetricPad1d(pad_left, pad_right),
-                    nn.ConvTranspose1d(hidden_dim, hidden_dim, kernel_size=stride*2, stride=stride, padding=0),
-                    nn.ReLU()
-                    ])
+                # 不做 padding＝'same'，手动对齐
+                pad_left = stride // 2 + (0 if stride % 2 == 0 else 1)
+                pad_right = stride // 2
+                upsample_layers.extend(
+                    [
+                        AsymmetricPad1d(pad_left, pad_right),
+                        nn.ConvTranspose1d(
+                            hidden_dim,
+                            hidden_dim,
+                            kernel_size=stride * 2,
+                            stride=stride,
+                            padding=0,
+                        ),
+                        nn.ReLU(),
+                    ]
+                )
             self.upsample = nn.Sequential(*upsample_layers)
         else:
             self.upsample = nn.Identity()
 
-        self.to_gamma = nn.Conv1d(hidden_dim, out_dim, kernel_size=1)
-        self.to_beta = nn.Conv1d(hidden_dim, out_dim, kernel_size=1)
+        # 3) 产生 γ、β
+        self.to_gamma = nn.Conv1d(hidden_dim, out_dim, kernel_size=1, bias=True)
+        self.to_beta = nn.Conv1d(hidden_dim, out_dim, kernel_size=1, bias=True)
 
-    def forward(self, sem_embedding):  # [B, D_sem, T]
-        h = self.shared_net(sem_embedding)  # [B, H, T]
-        h = self.upsample(h)
-        gamma = self.to_gamma(h)  # [B, D, T]
-        beta = self.to_beta(h)    # [B, D, T]
+        if zero_init:
+            nn.init.zeros_(self.to_gamma.weight)
+            nn.init.zeros_(self.to_gamma.bias)
+            nn.init.zeros_(self.to_beta.weight)
+            nn.init.zeros_(self.to_beta.bias)
+
+    def forward(self, sem_embedding: torch.Tensor):
+        """
+        sem_embedding : [B, D_sem, T_sem]
+        返回:
+            gamma, beta : [B, out_dim, T']
+        """
+        h = self.shared_net(sem_embedding)  # [B, H, T_sem]
+        h = self.upsample(h)  # [B, H, T']
+        gamma = self.to_gamma(h)
+        beta = self.to_beta(h)
         return gamma, beta
 
 
 class Decoder(nn.Module):
-    def __init__(self, input_channel, channels, rates, d_out = 1, 
-                 film_layer_idx=1,):
+    def __init__(
+        self,
+        input_channel: int,
+        channels: int,
+        rates: list,
+        d_out: int = 1,
+        film_layers: Union[int, List[int]] = 1,
+    ):
+        """
+        film_layers: 指定在哪些 upsample 层之后应用 FiLM（0 = pre_conv 之后）。
+        例如 [0,3] 表示 pre_conv 之后和第三个 DecoderBlock 之后。
+        """
         super().__init__()
 
-        # Add first conv layer
+        # ------------------- 基本网络 -------------------
         self.pre_conv = WNConv1d(input_channel, channels, kernel_size=7, padding=3)
 
-        # Add upsampling + MRF blocks
         self.layers = nn.ModuleList()
         for i, stride in enumerate(rates):
-            input_dim = channels // 2**i
-            output_dim = channels // 2 ** (i + 1)
-            self.layers.append(DecoderBlock(input_dim, output_dim, stride))
-
-        # Add final conv layer
+            in_c = channels // 2 ** i
+            out_c = channels // 2 ** (i + 1)
+            self.layers.append(DecoderBlock(in_c, out_c, stride))
         self.post_conv = nn.Sequential(
-            Snake1d(output_dim),
-            WNConv1d(output_dim, d_out, kernel_size=7, padding=3),
+            Snake1d(out_c),
+            WNConv1d(out_c, d_out, kernel_size=7, padding=3),
             nn.Tanh(),
         )
 
-        # FiLM layer
-        self.film_layer_idx = film_layer_idx
-        self.film_channels = channels // 2 ** film_layer_idx
-        self.film = FiLMGenerator(in_dim = input_channel, out_dim=self.film_channels, strides=rates[0:film_layer_idx])
+        # ------------------- 多层 FiLM -------------------
+        if isinstance(film_layers, int):
+            film_layers = [film_layers]
+        self.film_layers: List[int] = sorted(set(film_layers))
+        self.films = nn.ModuleDict()
+        for idx in self.film_layers:
+            target_c = channels // 2 ** idx if idx > 0 else channels
+            self.films[str(idx)] = FiLMGenerator(
+                in_dim=input_channel,
+                out_dim=target_c,
+                strides=rates[:idx],  # 使用前 idx 个 stride 进行上采样
+                zero_init=True,  # AdaLN-Zero
+            )
 
-    def forward(self, z_acs, z_sem):
-        gamma, beta = self.film(z_sem) # [B, D, T]
+    # ---------- FiLM helper ----------
+    @staticmethod
+    def _apply_film(x: torch.Tensor, gamma: torch.Tensor, beta: torch.Tensor):
+        if gamma.shape[-1] != x.shape[-1]:
+            gamma = F.interpolate(gamma, size=x.shape[-1], mode="nearest")
+            beta = F.interpolate(beta, size=x.shape[-1], mode="nearest")
+        return (1 + gamma) * x + beta  # AdaLN-Zero: 保留恒等路径
 
-        z = self.pre_conv(z_acs)
+    def forward(self, z_acs: torch.Tensor, z_sem: torch.Tensor):
+        """
+        z_acs : [B, D, T]
+        z_sem : [B, D, T_sem]
+        """
+        film_cache = {
+            idx: self.films[str(idx)](z_sem) for idx in self.film_layers
+        }  # 预先算好 γ/β
 
-        if self.film_layer_idx == 0:
-            if gamma.shape[-1] != z.shape[-1]:
-                gamma = F.interpolate(gamma, size=z.shape[-1], mode='nearest')
-                beta = F.interpolate(beta, size=z.shape[-1], mode='nearest')
-            z = gamma * z + beta
+        x = self.pre_conv(z_acs)  # -------- pre_conv --------
+        if 0 in self.film_layers:
+            gamma, beta = film_cache[0]
+            x = self._apply_film(x, gamma, beta)
 
+        # -------- upsample 层循环 --------
         for i, layer in enumerate(self.layers):
-            z = layer(z)
-            if i + 1 == self.film_layer_idx:
-                if gamma.shape[-1] != z.shape[-1]:
-                    gamma = F.interpolate(gamma, size=z.shape[-1], mode='nearest')
-                    beta = F.interpolate(beta, size=z.shape[-1], mode='nearest')
-                z = gamma * z + beta
-        
-        out = self.post_conv(z)
-        return out
+            x = layer(x)
+            layer_idx = i + 1
+            if layer_idx in self.film_layers:
+                gamma, beta = film_cache[layer_idx]
+                x = self._apply_film(x, gamma, beta)
+
+        return self.post_conv(x)
 
 
 class DiscoDAC(BaseModel, CodecMixin):
@@ -223,7 +287,7 @@ class DiscoDAC(BaseModel, CodecMixin):
         sem_codebook_size=512,
         quantizer_dropout: bool = False,
         sample_rate: int = 44100,
-        film_layer_idx: int = 1,
+        film_layers: Union[int, List[int]] = 1,
     ):
         super().__init__()
 
@@ -262,7 +326,7 @@ class DiscoDAC(BaseModel, CodecMixin):
             latent_dim,
             decoder_dim,
             decoder_rates,
-            film_layer_idx= film_layer_idx,
+            film_layers=film_layers,
         )
         
         self.proj_sem = nn.Sequential(

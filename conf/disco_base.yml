@@ -4,7 +4,7 @@ DiscoDAC.encoder_dim: 64
 DiscoDAC.encoder_rates: [[2, 4], [5, 8], [2, 2, 2, 5]]
 DiscoDAC.decoder_dim: 1536
 DiscoDAC.decoder_rates: [8, 5, 4, 2]
-DiscoDAC.film_layer_idx: 1
+DiscoDAC.film_layers: [0,1,2,3]
 
 # Quantization
 DiscoDAC.n_codebooks: 9
@@ -34,8 +34,8 @@ val_batch_size: 100
 device: cuda
 num_iters: 250000
 save_iters: [10000, 50000, 100000, 200000]
-valid_freq: 1000
-sample_freq: 10000
+valid_freq: 5000
+sample_freq: 50000
 num_workers: 32
 val_idx: [0, 1, 2, 3, 4, 5, 6, 7]
 seed: 0
@@ -91,14 +91,14 @@ AudioDataset.without_replacement: true
 
 train/build_dataset.folders:
   speech_fb:
-    - /vast/lg154/datasets/LibriSpeech/train-clean-100
+    - /vast/lb4434/datasets/LibriSpeech/train-clean-100
 
 val/build_dataset.folders:
   speech_fb:
-    - /vast/lg154/datasets/LibriSpeech/test-clean
+    - /vast/lb4434/datasets/LibriSpeech/test-clean
 test/build_dataset.folders:
   speech_fb:
-    - /vast/lg154/datasets/LibriSpeech/test-clean
+    - /vast/lb4434/datasets/LibriSpeech/test-clean
   
 batch_size: 12
 val_batch_size: 12

@@ -25,6 +25,15 @@ from audiotools.ml.decorators import when
 from torch.utils.tensorboard import SummaryWriter
 from transformers import HubertModel, Wav2Vec2Processor, Wav2Vec2FeatureExtractor
 
+from torchmetrics.audio import ScaleInvariantSignalDistortionRatio
+from pesq import pesq                        # pip install pesq
+from pystoi import stoi                      # pip install pystoi
+import jiwer                                 # pip install jiwer
+from fastdtw import fastdtw                  # pip install fastdtw
+import librosa                               # pip install librosa
+import subprocess, tempfile, json
+import numpy as np  # 添加缺失的导入
+
 import dac
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -154,7 +163,7 @@ def load(
         }
         print(f"Resuming from {str(Path('.').absolute())}/{kwargs['folder']}")
         if (Path(kwargs["folder"]) / "dac").exists():
-            generator, g_extra = DAC.load_from_folder(**kwargs)
+            generator, g_extra = DiscoDAC.load_from_folder(**kwargs)  # 修复：DAC -> DiscoDAC
         if (Path(kwargs["folder"]) / "discriminator").exists():
             discriminator, d_extra = Discriminator.load_from_folder(**kwargs)
 
@@ -240,22 +249,29 @@ def train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor, hub
     state.discriminator.train()
     output = {}
     
-    audio_data = batch["signal"].audio_data 
+    batch = util.prepare_batch(batch, accel.device)
+    audio_data = batch["signal"].audio_data  # 移动到设备准备之后
+    
     with torch.no_grad():
+        # 确保音频数据在正确的设备和格式
+        audio_for_hubert = audio_data.squeeze(1)  # [B, T]
+        if audio_for_hubert.device != torch.device('cpu'):
+            audio_for_hubert = audio_for_hubert.cpu()
+        
         inputs_values = hubert_processor(
-            audio_data.squeeze(1).numpy(), 
-            sampling_rate=16000, return_tensors="pt", padding=False # already padded in batch processing
-            ).input_values
+            audio_for_hubert.numpy(), 
+            sampling_rate=16000, 
+            return_tensors="pt", 
+            padding=True  # 修复：确保填充
+        ).input_values.to(accel.device)
         
         hubert_emb = hubert_model(
-            inputs_values.half().cuda(), output_hidden_states=True
-            ).hidden_states
-        hubert_emb = hubert_emb[hubert_layer]
+            inputs_values.half(), output_hidden_states=True
+        ).hidden_states[hubert_layer]
     
-    del inputs_values
+    del inputs_values, audio_for_hubert
     torch.cuda.empty_cache()
        
-    batch = util.prepare_batch(batch, accel.device)
     with torch.no_grad():
         signal = state.train_data.transform(
             batch["signal"].clone(), **batch["transform_args"]
@@ -288,7 +304,14 @@ def train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor, hub
         output["vq/commit_loss_sem"] = out["vq/commit_loss_sem"]
         output["vq/codebook_loss_acs"] = out["vq/codebook_loss_acs"]
         output["vq/codebook_loss_sem"] = out["vq/codebook_loss_sem"]
-        hubert_aligned = F.interpolate(hubert_emb.transpose(1, 2), size=out["e_sem"].shape[-1], mode="linear", align_corners=False)
+        
+        # 修复对齐损失计算
+        hubert_aligned = F.interpolate(
+            hubert_emb.transpose(1, 2), 
+            size=out["e_sem"].shape[-1], 
+            mode="linear", 
+            align_corners=False
+        )
         output["align/loss"] = state.align_loss(out["e_sem"], hubert_aligned.float())
 
         output["loss"] = sum([v * output[k] for k, v in lambdas.items() if k in output])
@@ -368,16 +391,139 @@ def save_samples(state, val_idx, save_path):
             )
             torchaudio.save(filename, audio_sample.audio_data[0], audio_sample.sample_rate)
 
+# ---------- Validator 辅助函数 ----------
+def _mcd(ref, est, sr):
+    """Mel-Cepstral Distortion (dB)"""
+    ref_mfcc = librosa.feature.mfcc(y=ref.astype(float), sr=sr, n_mfcc=13)
+    est_mfcc = librosa.feature.mfcc(y=est.astype(float), sr=sr, n_mfcc=13)
+    dist, _ = fastdtw(ref_mfcc.T, est_mfcc.T)
+    return dist / ref_mfcc.shape[1]
 
-def validate(state, val_dataloader, accel):
-    for batch in val_dataloader:
-        output = val_loop(batch, state, accel)
-    # Consolidate state dicts if using ZeroRedundancyOptimizer
-    if hasattr(state.optimizer_g, "consolidate_state_dict"):
-        state.optimizer_g.consolidate_state_dict()
-        state.optimizer_d.consolidate_state_dict()
+@torch.no_grad()
+def validate(state, val_dataloader, accel, hubert_model, hubert_processor, heavy_metric_freq=10000):
+    """
+    轻量 metric 每次跑；重型 metric（PESQ）隔 heavy_metric_freq 执行一次
+    使用完整的验证集进行评估
+    """
+    state.generator.eval()
+    sdr_metric = ScaleInvariantSignalDistortionRatio().to(accel.device)
+
+    running = {
+        "pesq": [], 
+        "stoi": [], 
+        "mcd": [], 
+        "si-sdr": []
+    }
+
+    val_losses = {
+        "mel_loss": [], 
+        "stft_loss": [], 
+        "waveform_loss": []
+    }
+
+    # 遍历整个验证集
+    for batch_idx, batch in enumerate(val_dataloader):
+        # 运行验证循环获取损失
+        val_metrics = val_loop(batch, state, accel)
+        
+        # 收集损失值，注意这里修改了 key 的格式
+        for old_key, new_key in [("mel/loss", "mel_loss"), 
+                                  ("stft/loss", "stft_loss"), 
+                                  ("waveform/loss", "waveform_loss")]:
+            if old_key in val_metrics:
+                val_losses[new_key].append(
+                    val_metrics[old_key].item() if isinstance(val_metrics[old_key], torch.Tensor) 
+                    else val_metrics[old_key]
+                )
+        
+        # 准备数据
+        batch_p = util.prepare_batch(batch, accel.device)
+        signal = state.val_data.transform(
+            batch_p["signal"].clone(), **batch_p["transform_args"]
+        )
+        
+        # 生成音频
+        out = state.generator(signal.audio_data, signal.sample_rate)
+        recons = AudioSignal(out["audio"], signal.sample_rate)
+
+        ref = signal.audio_data  # [B, 1, T]
+        est = recons.audio_data  # [B, 1, T]
+
+        # 确保采样率一致
+        if state.generator.sample_rate != 16000:
+            ref16 = torchaudio.functional.resample(ref, state.generator.sample_rate, 16000)
+            est16 = torchaudio.functional.resample(est, state.generator.sample_rate, 16000)
+        else:
+            ref16 = ref
+            est16 = est
+
+        batch_size = ref.shape[0]
+
+        # ========== 轻量级指标（每个batch都计算） ==========
+        for i in range(batch_size):
+            ref_audio_np = ref16[i, 0].cpu().numpy()  # [T]
+            est_audio_np = est16[i, 0].cpu().numpy()  # [T]
+            ref_full = ref[i, 0]  # [T]
+            est_full = est[i, 0]  # [T]
+            
+            # STOI
+            try:
+                stoi_score = stoi(ref_audio_np, est_audio_np, 16000)
+                running["stoi"].append(stoi_score)
+            except Exception as e:
+                accel.print(f"STOI 计算失败 (batch {batch_idx}, sample {i}): {e}")
+            
+            # MCD
+            try:
+                mcd_score = _mcd(ref_audio_np, est_audio_np, 16000)
+                running["mcd"].append(mcd_score)
+            except Exception as e:
+                accel.print(f"MCD 计算失败 (batch {batch_idx}, sample {i}): {e}")
+            
+            # SI-SDR (正确的参数顺序：估计信号, 参考信号)
+            try:
+                si_sdr_value = sdr_metric(est_full.unsqueeze(0), ref_full.unsqueeze(0))
+                running["si-sdr"].append(si_sdr_value.item())
+            except Exception as e:
+                accel.print(f"SI-SDR 计算失败 (batch {batch_idx}, sample {i}): {e}")
+
+        # ========== 重型指标（PESQ，按间隔计算） ==========
+        # 只在主进程上计算，避免重复
+        if state.step % heavy_metric_freq == 0 and accel.local_rank == 0:
+            # 限制每个batch最多计算2个样本的PESQ以节省时间
+            for i in range(min(batch_size, 2)):
+                ref_audio = ref16[i, 0].cpu().numpy()
+                est_audio = est16[i, 0].cpu().numpy()
+                
+                # PESQ
+                try:
+                    pesq_score = pesq(16000, ref_audio, est_audio, "wb")
+                    running["pesq"].append(pesq_score)
+                except Exception as e:
+                    accel.print(f"PESQ 计算失败 (batch {batch_idx}, sample {i}): {e}")
+
+    # ========== 汇总结果 ==========
+    output = {}
+    
+    # 汇总损失 - 直接使用简单的键名
+    for key, values in val_losses.items():
+        if values:
+            output[key] = float(np.mean(values))
+    
+    # 汇总指标 - 直接使用简单的键名
+    for key, values in running.items():
+        if values:
+            mean_value = float(np.mean(values))
+            output[key] = mean_value
+            
+            # 为有足够样本的指标添加标准差
+            if len(values) > 1:
+                output[f"{key}_std"] = float(np.std(values))
+    
+    # 恢复训练模式
+    state.generator.train()
+    
     return output
-
 
 @argbind.bind(without_prefix=True)
 def train(
@@ -397,8 +543,10 @@ def train(
         "mel/loss": 100.0,
         "adv/feat_loss": 2.0,
         "adv/gen_loss": 1.0,
-        "vq/commitment_loss": 0.25,
-        "vq/codebook_loss": 1.0,
+        "vq/commit_loss_acs": 0.25,  # 修复：键名应该匹配输出
+        "vq/commit_loss_sem": 0.25,  # 修复：键名应该匹配输出
+        "vq/codebook_loss_acs": 1.0,  # 修复：键名应该匹配输出
+        "vq/codebook_loss_sem": 1.0,  # 修复：键名应该匹配输出
         'align/loss': 1.0
     },
     exp_name: str = "baseline",
@@ -454,7 +602,7 @@ def train(
     for step, batch in enumerate(train_dataloader, start=state.step):
         metrics = train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor, hubert_layer=hubert_layer)
         metrics = {f"train/{k}": (v.item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
-        if accel.local_rank == 0 and step % 50 ==0:
+        if accel.local_rank == 0 and step % 50 == 0:
             wandb.log(metrics, step=state.step)
 
         last_iter = (
@@ -464,20 +612,17 @@ def train(
             save_samples(state, val_idx, save_path)
 
         if step % valid_freq == 0 or last_iter:
-            validate(state, val_dataloader, accel)
-            if accel.local_rank == 0:
-                val_metrics = {
-                    f"val/{k}": float(v())  # returns a float, guaranteed
-                    for k, v in tracker.metrics["val"]["mean"].items() if v is not None
-                    }
-                wandb.log(val_metrics, step=state.step)
+            val_metrics = validate(state, val_dataloader, accel, hubert_model, hubert_processor)
+            if accel.local_rank == 0 and val_metrics:
+                val_metrics_wandb = {f"val/{k}": v for k, v in val_metrics.items()}
+                wandb.log(val_metrics_wandb, step=state.step)
             checkpoint(state, save_iters, save_path, tracker)
             print(f"Val done")
 
         if last_iter:
             break
 
-        state.step +=1
+        state.step += 1
 
 
 if __name__ == "__main__":
