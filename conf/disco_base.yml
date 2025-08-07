@@ -4,10 +4,10 @@ DiscoDAC.encoder_dim: 64
 DiscoDAC.encoder_rates: [[2, 4], [5, 8], [2, 2, 2, 5]]
 DiscoDAC.decoder_dim: 1536
 DiscoDAC.decoder_rates: [8, 5, 4, 2]
-DiscoDAC.film_layer_idx: 1
+DiscoDAC.film_layer_idx: "03"
 
 # Quantization
-DiscoDAC.n_codebooks: 9
+DiscoDAC.n_codebooks: 5
 DiscoDAC.codebook_size: 1024
 DiscoDAC.codebook_dim: 8
 DiscoDAC.quantizer_dropout: 1.0

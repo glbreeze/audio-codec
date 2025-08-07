@@ -163,6 +163,7 @@ class Decoder(nn.Module):
     def __init__(self, input_channel, channels, rates, d_out = 1, 
                  film_layers_idx=[1],):
         super().__init__()
+        print(f"--check model structure, film layers are {film_layers_idx}")
 
         # Add first conv layer
         self.pre_conv = WNConv1d(input_channel, channels, kernel_size=7, padding=3)
@@ -225,7 +226,7 @@ class DiscoDAC(BaseModel, CodecMixin):
         sem_codebook_size=512,
         quantizer_dropout: bool = False,
         sample_rate: int = 44100,
-        film_layer_idx: list = [1],
+        film_layer_idx: list = '0',
     ):
         super().__init__()
 
@@ -264,7 +265,7 @@ class DiscoDAC(BaseModel, CodecMixin):
             latent_dim,
             decoder_dim,
             decoder_rates,
-            film_layers_idx= film_layer_idx,
+            film_layers_idx=[int(i) for i in list(film_layer_idx)],
         )
         
         self.proj_sem = nn.Sequential(
