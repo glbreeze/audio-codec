@@ -400,7 +400,7 @@ def train(
         os.environ["WANDB_MODE"] = "online"
         os.environ["WANDB_CACHE_DIR"] = "/scratch/lg154/sseg/.cache/wandb"
         os.environ["WANDB_CONFIG_DIR"] = "/scratch/lg154/sseg/.config/wandb"
-        wandb.init(project="audio_codec", config=namespace_to_dict(args), name=exp_name)
+        wandb.init(project="disco_codec", config=namespace_to_dict(args), name=exp_name)
                 
     util.seed(seed)
     Path(save_path).mkdir(exist_ok=True, parents=True)

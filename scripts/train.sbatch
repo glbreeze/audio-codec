@@ -9,6 +9,8 @@
 #SBATCH --gres=gpu
 #SBATCH --partition=a100_1,a100_2,h100_1,v100,rtx8000
 
+NB=$1
+
 # Singularity path
 ext3_path=/scratch/$USER/python11/overlay-25GB-500K.ext3
 sif_path=/scratch/lg154/python11/cuda11.8.86-cudnn8.7-devel-ubuntu22.04.2.sif
@@ -22,6 +24,7 @@ export SSL_CERT_FILE=/scratch/lg154/sseg/fs-ood/cacert.pem
 export CUDA_VISIBLE_DEVICES=0
 
 python scripts/train.py --args.load conf/libri_base.yml \
-    --save_path runs/libri6_baseline/ \
-    --exp_name cb6_baseline
+    --save_path runs_08/cb${NB}_baseline_new/ \
+    --DAC.n_codebooks ${NB} \
+    --exp_name cb${NB}_baseline_new
 "
