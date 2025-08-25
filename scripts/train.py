@@ -386,6 +386,7 @@ def train(
     val_batch_size: int = 10,
     num_workers: int = 8,
     val_idx: list = [0, 1, 2, 3, 4, 5, 6, 7],
+    proj_name: str = 'disco_codec',
     lambdas: dict = {
         "mel/loss": 100.0,
         "adv/feat_loss": 2.0,
@@ -400,7 +401,7 @@ def train(
         os.environ["WANDB_MODE"] = "online"
         os.environ["WANDB_CACHE_DIR"] = "/scratch/lg154/sseg/.cache/wandb"
         os.environ["WANDB_CONFIG_DIR"] = "/scratch/lg154/sseg/.config/wandb"
-        wandb.init(project="disco_codec", config=namespace_to_dict(args), name=exp_name)
+        wandb.init(project=proj_name, config=namespace_to_dict(args), name=exp_name)
                 
     util.seed(seed)
     Path(save_path).mkdir(exist_ok=True, parents=True)
@@ -447,7 +448,10 @@ def train(
             save_samples(state, val_idx, save_path)
 
         if step % valid_freq == 0 or last_iter:
-            validate(state, val_dataloader, accel, final_val=step%(20*valid_freq)==0)
+            val_flag = False
+            if step%(20*valid_freq)==0 and 'mus' not in proj_name:
+                val_flag = True
+            validate(state, val_dataloader, accel, final_val=val_flag)
             if accel.local_rank == 0:
                 val_metrics = {
                     f"val/{k}": float(v())  # returns a float, guaranteed

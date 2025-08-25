@@ -92,7 +92,7 @@ def build_codec_from_yaml(cfg: dict, ckpt_path: Path, device: str = "cpu", model
     model_cfg = {k.split('.')[1]: v for k, v in cfg.items() if k.startswith(model_type)}
     
     model_folder = ckpt_path.parts[-2]
-    match = re.search(r"libri(\d+)", model_folder)
+    match = re.search(r"cb(\d+)", model_folder)
     codebooks = int(match.group(1))
     if model_type == 'DiscoDAC':
         match = re.search(r"film(\d+)", model_folder)
@@ -147,13 +147,15 @@ def main():
     # NEW: model loading / generation options
     ap.add_argument("--cfg_yml", type=str, default=None, help="YAML config to build the codec (e.g., DiscoDAC).")
     ap.add_argument("--ckpt", type=str, default=None, help="Checkpoint path for the pretrained codec.")
-    ap.add_argument("--model_type", type=str, default="DiscoDAC", help="DAC or DiscoDAC")
     
-
     ap.add_argument("--whisper_model", type=str, default="medium.en", help="e.g., tiny.en, base.en, small.en, medium.en")
-    ap.add_argument("--out_csv", type=str, default="results.csv")
+
     args = ap.parse_args()
-    args.split='train' if 'train' in args.org_dir else 'val'
+    if 'train' in args.org_dir:
+        args.split='train'; args.out_csv='train_results.csv'
+    else:
+        args.split='val'; args.out_csv='val_results.csv'
+    args.model_type = 'DAC' if 'baseline' in args.ckpt else 'DiscoDAC'
 
     org_dir = Path(args.org_dir)
     assert org_dir.exists(), "org_dir must exist."
@@ -239,7 +241,7 @@ def main():
         
         # === store latent code ===
         save_item_npz(
-            out_dir=Path(args.ckpt).parent/'asr_data', split=args.split, utt_id=utt_id, text=gt_txt,
+            out_dir=Path(args.ckpt).parent/'asr_data', split=args.split, utt_id=uid, text=gt_txt,
             code=codes[0].cpu().numpy(),
             latent=latents[0].cpu().numpy(),
             )
@@ -247,7 +249,7 @@ def main():
         #  ======== PESQ/STOI  ======== 
         pesq_score = pesq(args.sr, ref=org_signal.audio_data.squeeze().cpu().numpy(), deg=dec_signal.audio_data.squeeze().cpu().numpy(), mode='wb')
         stoi_score = stoi(org_signal.audio_data.squeeze().cpu().numpy(), dec_signal.audio_data.squeeze().cpu().numpy(), args.sr, extended=False)
-        snr_score = si_snr(dec_signal.audio_data.squeeze(1).cpu(), org_signal.audio_data.squeeze(1).cpu(), reduction=False).item()
+        snr_score = si_snr(dec_signal.audio_data.squeeze(1).cpu(), org_signal.audio_data.squeeze(1).cpu(), reduction=True)
         
         #  ========  Speaker embeddings  ======== 
         spk_id = refs_df.loc[uid, "spk_id"] if (uid in refs_df.index) else None

@@ -72,8 +72,14 @@ class SemanticHead(nn.Module):
             in_dim = d_model
             if i == (len(strides)-1)//2:
                 d_model *= 2
+            if stride <= 2:
+                kernel_size, padding = 3, 1
+            elif stride <= 4:
+                kernel_size, padding = 5, 2
+            else:
+                kernel_size, padding = 7, 3
             self.pre_conv += [
-                nn.Conv1d(in_dim, d_model, 3, stride=stride, padding=1, bias=False),
+                nn.Conv1d(in_dim, d_model, kernel_size=kernel_size, stride=stride, padding=padding, bias=False),
                 nn.Dropout(p=dropout),
                 nn.Sequential(
                     TransposeLast(), # (B, C, T) → (B, T, C)

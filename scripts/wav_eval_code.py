@@ -66,23 +66,43 @@ def ctc_greedy_decode(logits, blank=0):
         hyps.append(hyp)
     return hyps
 
-def compute_wer(ref, hyp):
-    # tiny WER for quick probe (char/word insensitive; treat tokens as chars sequence)
-    r = "".join(ref).split()
-    h = "".join(hyp).split()
-    # fallback to char-level if no spaces (common)
-    if not r or not h:
-        r, h = list(ref), list(hyp)
-    # Levenshtein
-    dp = [[0]*(len(h)+1) for _ in range(len(r)+1)]
-    for i in range(len(r)+1): dp[i][0] = i
-    for j in range(len(h)+1): dp[0][j] = j
-    for i in range(1,len(r)+1):
-        for j in range(1,len(h)+1):
-            cost = 0 if r[i-1]==h[j-1] else 1
-            dp[i][j] = min(dp[i-1][j]+1, dp[i][j-1]+1, dp[i-1][j-1]+cost)
-    return dp[-1][-1] / max(1,len(r))
 
+def edit_distance(ref_tokens, hyp_tokens):
+    """Compute Levenshtein distance between two token sequences."""
+    dp = [[0] * (len(hyp_tokens) + 1) for _ in range(len(ref_tokens) + 1)]
+    
+    # initialize
+    for i in range(len(ref_tokens) + 1):
+        dp[i][0] = i
+    for j in range(len(hyp_tokens) + 1):
+        dp[0][j] = j
+    
+    # DP fill
+    for i in range(1, len(ref_tokens) + 1):
+        for j in range(1, len(hyp_tokens) + 1):
+            cost = 0 if ref_tokens[i-1] == hyp_tokens[j-1] else 1
+            dp[i][j] = min(
+                dp[i-1][j] + 1,       # deletion
+                dp[i][j-1] + 1,       # insertion
+                dp[i-1][j-1] + cost   # substitution
+            )
+    return dp[-1][-1]
+
+
+def compute_wer_cer(ref, hyp):
+    # ---- CER ----
+    ref_chars = list(ref.strip())
+    hyp_chars = list(hyp.strip())
+    cer_dist = edit_distance(ref_chars, hyp_chars)
+    cer = cer_dist / max(1, len(ref_chars))
+    
+    # ---- WER ----
+    ref_words = ref.strip().split()
+    hyp_words = hyp.strip().split()
+    wer_dist = edit_distance(ref_words, hyp_words)
+    wer = wer_dist / max(1, len(ref_words))
+    
+    return wer, cer
 
 # --------------------------
 # Training / Eval
@@ -161,13 +181,15 @@ def run_epoch(model, loader, optimizer=None, device="cpu", neg_permute=True, cod
 
     # Aggregate
     avg_ctc_pos = total_pos_loss / max(1, total_batches)
-    wers = [compute_wer(r, h) for r, h in zip(all_ref_texts, all_hyp_texts)]
+    results = [compute_wer_cer(r, h) for r, h in zip(all_ref_texts, all_hyp_texts)]
+    wers, cers = zip(*results)
     avg_wer = float(np.mean(wers))
+    avg_cer = float(np.mean(cers))
 
     # MI proxy: E[log q(y|x) - log q(y'|x)]
     mi_hat = (mi_pos_sum - mi_neg_sum) / max(1, total_batches) if total_batches else 0.0
 
-    return avg_wer, avg_ctc_pos, mi_hat
+    return avg_wer, avg_cer, avg_ctc_pos, mi_hat
 
 
 def main():
@@ -224,10 +246,10 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     for ep in range(1, args.epochs+1):
-        tr_wer, tr_loss, tr_mi = run_epoch(model, tr_loader, optimizer=opt, device=args.device, codebooks=codebooks, input_type=args.input_type)
-        dv_wer, dv_loss, dv_mi = run_epoch(model, ev_loader, optimizer=None, device=args.device, codebooks=codebooks, input_type=args.input_type)
+        tr_wer, tr_cer, tr_loss, tr_mi = run_epoch(model, tr_loader, optimizer=opt, device=args.device, codebooks=codebooks, input_type=args.input_type)
+        dv_wer, dv_cer, dv_loss, dv_mi = run_epoch(model, ev_loader, optimizer=None, device=args.device, codebooks=codebooks, input_type=args.input_type)
 
-        print(f"[ep {ep:02d}] train WER={tr_wer:.3f} loss={tr_loss:.3f} MI={tr_mi:.3f} | dev WER={dv_wer:.3f} loss={dv_loss:.3f} MI={dv_mi:.3f}")
+        print(f"[ep {ep:02d}] train WER={tr_wer:.3f} CER={tr_cer:.3f} loss={tr_loss:.3f} MI={tr_mi:.3f} | dev WER={dv_wer:.3f} CER={dv_cer:.3f} loss={dv_loss:.3f} MI={dv_mi:.3f}")
 
 if __name__ == "__main__":
     main()
