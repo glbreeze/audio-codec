@@ -144,7 +144,7 @@ def run_epoch(model, loader, optimizer=None, device="cpu", neg_permute=True, cod
 
         # Decode greedily for WER
         with torch.no_grad():
-            hyps_ids = ctc_greedy_decode(logits_TBC, blank=0)  # list of int ids
+            hyps_ids = ctc_greedy_decode(logits_TBC.transpose(0,1), blank=0)  # [T, B, C] -> list of int ids
             # rebuild reference text per sample from ycat+ylens
             ref_chunks = torch.split(ycat.detach().cpu(), ylens.detach().cpu().tolist())
             for ref_ids, hyp_ids in zip(ref_chunks, hyps_ids):
@@ -219,8 +219,6 @@ def main():
     else:
         in_dim = x0.size(1)
         model = LatentCTCProbe("continuous", d_in=in_dim, d_emb=args.d_emb, hidden=args.hidden, n_layers=args.layers)
-    
-    import pdb; pdb.set_trace()
 
     model.to(args.device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
