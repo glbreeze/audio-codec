@@ -5,32 +5,46 @@ import re, unicodedata
 
 import torch
 import torch.utils.data as tud
+from torchaudio.models.decoder import download_pretrained_files
 
 
-stoi = {'a': 1, 'b': 2, 'c': 3, 'd': 4, 'e': 5, 'f': 6, 'g': 7, 'h': 8, 'i': 9, 'j': 10, 'k': 11, 'l': 12, 
-        'm': 13, 'n': 14, 'o': 15, 'p': 16, 'q': 17, 'r': 18, 's': 19, 't': 20, 'u': 21, 'v': 22, 'w': 23, 
-        'x': 24, 'y': 25, 'z': 26, ' ': 27, "'": 28, '0': 29, '1': 30, '2': 31, '3': 32, '4': 33, '5': 34, 
-        '6': 35, '7': 36, '8': 37, '9': 38}
-itos = {1: 'a', 2: 'b', 3: 'c', 4: 'd', 5: 'e', 6: 'f', 7: 'g', 8: 'h', 9: 'i', 10: 'j', 11: 'k', 12: 'l',
-        13: 'm', 14: 'n', 15: 'o', 16: 'p', 17: 'q', 18: 'r', 19: 's', 20: 't', 21: 'u', 22: 'v', 23: 'w',
-        24: 'x', 25: 'y', 26: 'z', 27: ' ', 28: "'", 29: '0', 30: '1', 31: '2', 32: '3', 33: '4', 34: '5',
-        35: '6', 36: '7', 37: '8', 38: '9'}
+# ========= define the tokens  ========= 
+files = download_pretrained_files("librispeech-4-gram")
+with open(files.tokens, 'r') as f:
+    tokens = [line.strip() for line in f]
 
+stoi = {token: idx for idx, token in enumerate(tokens)}
+itos = {idx: token for idx, token in enumerate(tokens)}
+
+def text_to_ids(text):
+    text = text.lower().strip()
+    return [stoi[c] for c in text if c in stoi]
+
+def ids_to_text(ids):
+    return "".join(itos.get(i, "") for i in ids)
+
+
+# ========= preprocess the target transcript =========
 def normalize_text(text: str) -> str:
-    t = unicodedata.normalize("NFKD", text).lower() # 1) Unicode normalize + lowercase
+    # 1) Unicode normalize + lowercase
+    t = unicodedata.normalize("NFKD", text).lower()
 
-    # 2) Map curly/backtick quotes to ASCII apostrophe (keep apostrophes in words)
+    # 2) Normalize quotes → apostrophe
     t = t.replace("’", "'").replace("‘", "'").replace("`", "'")
     t = t.replace("“", " ").replace("”", " ").replace('"', " ")
 
     # 3) Treat hyphen-like separators as spaces
     t = re.sub(r"[-–—−_/\\]", " ", t)
 
-    # 4) Keep only [a-z 0-9 ' ] ; drop everything else
-    t = re.sub(r"[^a-z0-9' ]", " ", t)
+    # 4) Keep only [a-z ' ] ; drop digits and other punctuation
+    t = re.sub(r"[^a-z' ]", " ", t)
 
-    # 5) Collapse spaces
+    # 5) Collapse multiple spaces
     t = re.sub(r"\s+", " ", t).strip()
+
+    # 6) Replace space with '|' (LibriSpeech token for space)
+    t = t.replace(" ", "|")
+
     return t
 
 
@@ -45,7 +59,6 @@ def build_manifest(root_dir: Path, split: str) -> Path:
             rows.append({
                 "utt_id": str(z["utt_id"]), 
                 "file": str(f),
-                "text_len": len(text),
                 "frames_code": int(z["code"].shape[-1]),     # [K, T]
                 "frames_latent": int(z["latent"].shape[-1]), # [8, T] / [16, T]
                 "text": text,  # optional convenience
@@ -83,9 +96,6 @@ class CodecDataset(tud.Dataset):
 
 def build_collate(kind: str):
     assert kind in ("discrete", "continuous")
-
-    def text_to_ids(text):
-        return [stoi[c] for c in text if c in stoi]
 
     def collate(batch):
         # batch: list of dicts {"utt_id", "x", "text"}

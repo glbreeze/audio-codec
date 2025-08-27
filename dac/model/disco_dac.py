@@ -63,6 +63,7 @@ class SemanticHead(nn.Module):
         dropout=0.1,
         activation_fn="gelu",
         layer_norm_first=True,
+        large_kernel=False,
     ):
         super().__init__()
 
@@ -72,12 +73,17 @@ class SemanticHead(nn.Module):
             in_dim = d_model
             if i == (len(strides)-1)//2:
                 d_model *= 2
-            if stride <= 2:
-                kernel_size, padding = 3, 1
-            elif stride <= 4:
-                kernel_size, padding = 5, 2
+            
+            if large_kernel:
+                if stride <= 2:
+                    kernel_size, padding = 3, 1
+                elif stride <= 4:
+                    kernel_size, padding = 5, 2
+                else:
+                    kernel_size, padding = 7, 3
             else:
-                kernel_size, padding = 7, 3
+                kernel_size, padding = 3, 1
+                
             self.pre_conv += [
                 nn.Conv1d(in_dim, d_model, kernel_size=kernel_size, stride=stride, padding=padding, bias=False),
                 nn.Dropout(p=dropout),
@@ -233,6 +239,7 @@ class DiscoDAC(BaseModel, CodecMixin):
         quantizer_dropout: bool = False,
         sample_rate: int = 44100,
         film_layer_idx: list = '0',
+        large_kernel: bool = False,
     ):
         super().__init__()
 
@@ -249,7 +256,7 @@ class DiscoDAC(BaseModel, CodecMixin):
         self.hop_length = np.prod(encoder_rates[0] + encoder_rates[1])
         self.enc = SharedEncoder(d_model=encoder_dim, strides=encoder_rates[0])
         self.acs_enc = AcousticHead(d_model=self.enc.d_model, strides=encoder_rates[1], d_latent=self.latent_dim)
-        self.sem_enc = SemanticHead(d_model=self.enc.d_model, strides=encoder_rates[2], d_latent=self.latent_dim)
+        self.sem_enc = SemanticHead(d_model=self.enc.d_model, strides=encoder_rates[2], d_latent=self.latent_dim, large_kernel=large_kernel)
         
         self.n_codebooks = n_codebooks
         self.codebook_size = codebook_size

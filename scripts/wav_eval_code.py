@@ -37,34 +37,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from process_data.asr_data import stoi, itos, build_collate, CodecDataset, build_manifest
-from dac.model.probe_ctc import LatentCTCProbe
-
-# --------------------------
-# Utils: text <-> ids
-# --------------------------
-
-
-def text_to_ids(text, stoi):
-    text = text.lower().strip()
-    return [stoi[c] for c in text if c in stoi]
-
-def ids_to_text(ids, itos):
-    return "".join(itos.get(i, "") for i in ids)
-
-def ctc_greedy_decode(logits, blank=0):
-    # logits: [B,T,C] log-probs
-    pred = logits.argmax(-1)  # [B,T]
-    hyps = []
-    for seq in pred.cpu().tolist():
-        hyp = []
-        prev = None
-        for p in seq:
-            if p != blank and p != prev:
-                hyp.append(p)
-            prev = p
-        hyps.append(hyp)
-    return hyps
+from process_data.asr_data import stoi, itos, build_collate, CodecDataset, build_manifest, text_to_ids, ids_to_text
+from dac.probe_asr.probe_ctc import LatentCTCProbe
+from dac.probe_asr.decoders import ctc_greedy_decode, beam_ctc_decode
 
 
 def edit_distance(ref_tokens, hyp_tokens):
@@ -90,6 +65,14 @@ def edit_distance(ref_tokens, hyp_tokens):
 
 
 def compute_wer_cer(ref, hyp):
+    
+    if isinstance(ref, list) and isinstance(hyp, list):
+        wers, cers = [], []
+        for r, h in zip(ref, hyp):
+            w, c = compute_wer_cer(r, h)
+            wers.append(w); cers.append(c)
+        return float(np.mean(wers)), float(np.mean(cers))
+    
     # ---- CER ----
     ref_chars = list(ref.strip())
     hyp_chars = list(hyp.strip())
@@ -107,7 +90,7 @@ def compute_wer_cer(ref, hyp):
 # --------------------------
 # Training / Eval
 # --------------------------
-def run_epoch(model, loader, optimizer=None, device="cpu", neg_permute=True, codebooks=None, input_type=None):
+def run_epoch(model, loader, optimizer=None, device="cpu", neg_permute=True, codebooks=None, input_type=None, dec_scheme='greedy'):
     """
     model: your BLSTM-CTC probe. forward(x, xlens) -> log_probs [T,B,C]
     loader: yields {"utt_id", "x","xlens","ycat","ylens"}
@@ -122,7 +105,7 @@ def run_epoch(model, loader, optimizer=None, device="cpu", neg_permute=True, cod
 
     total_pos_loss = 0.0
     total_batches = 0
-    all_ref_texts, all_hyp_texts = [], []
+    wers, cers = [], []
     mi_pos_sum, mi_neg_sum = 0.0, 0.0
 
     for batch in loader:
@@ -161,30 +144,36 @@ def run_epoch(model, loader, optimizer=None, device="cpu", neg_permute=True, cod
             loss_pos.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             optimizer.step()
-
-        # Decode greedily for WER
-        with torch.no_grad():
-            hyps_ids = ctc_greedy_decode(logits_TBC.transpose(0,1), blank=0)  # [T, B, C] -> list of int ids
-            # rebuild reference text per sample from ycat+ylens
-            ref_chunks = torch.split(ycat.detach().cpu(), ylens.detach().cpu().tolist())
-            for ref_ids, hyp_ids in zip(ref_chunks, hyps_ids):
-                ref_txt = ids_to_text(ref_ids.tolist(), itos)
-                hyp_txt = ids_to_text(hyp_ids, itos)
-                all_ref_texts.append(ref_txt)
-                all_hyp_texts.append(hyp_txt)
-
+        
         total_pos_loss += float(loss_pos.detach().cpu())
         if neg_permute:
             mi_pos_sum += -float(loss_pos.detach().cpu())
             mi_neg_sum += -float(loss_neg.detach().cpu())
         total_batches += 1
 
+        # Decode greedily for WER
+        ref_batch, hyp_batch = [], []
+        with torch.no_grad():
+            if dec_scheme == 'greedy':
+                pred, pred_lens = ctc_greedy_decode(logits_TBC.transpose(0,1), xlens, blank=0)  # [T, B, C] -> list of int ids
+            elif dec_scheme == 'search' or dec_scheme == 'beam':
+                pred, pred_lens, transcripts = beam_ctc_decode(logits_TBC.transpose(0, 1), xlens, lm_weight=2.0, word_score=0.0, beam_size=50)
+                
+        ref_chunks = torch.split(ycat.cpu(), ylens.cpu().tolist())      # token_ids
+        hyp_chunks = torch.split(pred.cpu(), pred_lens.cpu().tolist())  # token_ids
+        for ref_ids, hyp_ids in zip(ref_chunks, hyp_chunks):
+            ref_txt = ids_to_text(ref_ids.tolist()).replace('|', ' ')
+            hyp_txt = ids_to_text(hyp_ids.tolist()).replace('|', ' ')
+            ref_batch.append(ref_txt)
+            hyp_batch.append(hyp_txt)
+        wer, cer = compute_wer_cer(ref_batch, hyp_batch)
+        wers.append(wer)
+        cers.append(cer)
+
     # Aggregate
-    avg_ctc_pos = total_pos_loss / max(1, total_batches)
-    results = [compute_wer_cer(r, h) for r, h in zip(all_ref_texts, all_hyp_texts)]
-    wers, cers = zip(*results)
     avg_wer = float(np.mean(wers))
     avg_cer = float(np.mean(cers))
+    avg_ctc_pos = total_pos_loss / max(1, total_batches)
 
     # MI proxy: E[log q(y|x) - log q(y'|x)]
     mi_hat = (mi_pos_sum - mi_neg_sum) / max(1, total_batches) if total_batches else 0.0
@@ -215,6 +204,7 @@ def main():
     random.seed(0); np.random.seed(0); torch.manual_seed(0)
     
     # ======= prepare dataset =======
+    print('---------load data--------')
     tr_manifest = Path(args.data_root) / "manifest_train.csv"
     ev_manifest = Path(args.data_root) / "manifest_val.csv"
     
@@ -230,7 +220,8 @@ def main():
     tr_loader = torch.utils.data.DataLoader(tr_data, batch_size=args.batch_size, shuffle=True, collate_fn=collate)
     ev_loader = torch.utils.data.DataLoader(ev_data, batch_size=args.batch_size, shuffle=False, collate_fn=collate)
 
-    # Infer dims for model
+   # ======= prepare model =======
+    print('---------define model--------')
     example_item = tr_data[0]
     uid0, x0 = example_item["utt_id"], example_item["x"]
     if args.input_type == "discrete":
@@ -246,8 +237,8 @@ def main():
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     for ep in range(1, args.epochs+1):
-        tr_wer, tr_cer, tr_loss, tr_mi = run_epoch(model, tr_loader, optimizer=opt, device=args.device, codebooks=codebooks, input_type=args.input_type)
-        dv_wer, dv_cer, dv_loss, dv_mi = run_epoch(model, ev_loader, optimizer=None, device=args.device, codebooks=codebooks, input_type=args.input_type)
+        tr_wer, tr_cer, tr_loss, tr_mi = run_epoch(model, tr_loader, optimizer=opt, device=args.device, codebooks=codebooks, input_type=args.input_type, dec_scheme='greedy')
+        dv_wer, dv_cer, dv_loss, dv_mi = run_epoch(model, ev_loader, optimizer=None, device=args.device, codebooks=codebooks, input_type=args.input_type, dec_scheme='beam')
 
         print(f"[ep {ep:02d}] train WER={tr_wer:.3f} CER={tr_cer:.3f} loss={tr_loss:.3f} MI={tr_mi:.3f} | dev WER={dv_wer:.3f} CER={dv_cer:.3f} loss={dv_loss:.3f} MI={dv_mi:.3f}")
 
