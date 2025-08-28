@@ -1,5 +1,5 @@
 
-import argparse, os, sys, json, math, glob, yaml, re, tempfile, shutil, warnings, subprocess
+import argparse, os, sys, json, math, glob, yaml, re, tempfile, shutil, warnings, subprocess, random
 from pathlib import Path
 from collections import defaultdict
 
@@ -149,6 +149,9 @@ def main():
     ap.add_argument("--ckpt", type=str, default=None, help="Checkpoint path for the pretrained codec.")
     
     ap.add_argument("--whisper_model", type=str, default="medium.en", help="e.g., tiny.en, base.en, small.en, medium.en")
+    
+    ap.add_argument("--subset", type=float, default=1.0)
+    ap.add_argument("--eval_flag", action='store_true', default=False)
 
     args = ap.parse_args()
     if 'train' in args.org_dir:
@@ -205,10 +208,32 @@ def main():
     
     # Normalization for WER/CER
     normalize = Compose([ToLowerCase(), RemovePunctuation(), RemoveMultipleSpaces(), Strip()])
+    
+    if args.subset < 1:
+        idx_path = f'./subset_idx_{int(args.subset*100)}.txt'
+        if not os.path.exists(idx_path):
+            utt_ids_all = sorted(org_files.keys())
+            random.seed(42)
+            subset_ids = random.sample(utt_ids_all, int(len(utt_ids_all)*args.subset))
+            
+            with open(idx_path, "w") as f:
+                for uid in subset_ids:
+                    f.write(uid + "\n")
+            utt_ids = subset_ids
+        else:
+            with open(idx_path, "r") as f:
+                subset_ids = [line.strip() for line in f]
+            utt_ids = [uid for uid in sorted(org_files.keys()) if uid in subset_ids]
+    else:
+        utt_ids = sorted(org_files.keys())
 
-    for uid in tqdm(org_files.keys(), desc="Evaluating"):
+    for idx, uid in enumerate(utt_ids):
         file_path = org_files[uid]
         org_signal = load_audio(file_path, sr=args.sr)
+        gt_txt = str(refs_df.loc[uid, "text"])
+        
+        if idx % 1000 == 0:
+            print(f'---processing {idx}th sample')
         
         # ======== codec forward =========
         with torch.no_grad():
@@ -223,112 +248,112 @@ def main():
             codes = torch.cat([out["codes_sem"].unsqueeze(1), out["codes_acs"]], dim=1)  # [B, K, T]
             latents = torch.cat([out['latents_sem'], out['latents_acs'][:, :model.codebook_dim,:]], dim=1) # [B, 16, T]
         
-
-        # ======== get wer and cer  ======== 
-        if uid not in org_texts:
-            org_texts[uid] = transcribe_whisper(asr_model, org_signal.audio_data.squeeze())
-        if uid not in dec_texts:
-            dec_texts[uid] = transcribe_whisper(asr_model, dec_signal.audio_data.squeeze())
-
-        gt_txt = str(refs_df.loc[uid, "text"])
-        spk_id = refs_df.at[uid, "spk_id"] if "spk_id" in refs_df.columns else None
-        wer_ref = jiwer_wer(normalize(gt_txt), normalize(org_texts[uid]))
-        cer_ref = jiwer_cer(normalize(gt_txt), normalize(org_texts[uid]))
-        wer_dec = jiwer_wer(normalize(gt_txt), normalize(dec_texts[uid]))
-        cer_dec = jiwer_cer(normalize(gt_txt), normalize(dec_texts[uid]))
-        delta_wer = wer_dec - wer_ref
-        delta_cer = cer_dec - cer_ref
-        
         # === store latent code ===
         save_item_npz(
             out_dir=Path(args.ckpt).parent/'asr_data', split=args.split, utt_id=uid, text=gt_txt,
             code=codes[0].cpu().numpy(),
             latent=latents[0].cpu().numpy(),
             )
-
-        #  ======== PESQ/STOI  ======== 
-        pesq_score = pesq(args.sr, ref=org_signal.audio_data.squeeze().cpu().numpy(), deg=dec_signal.audio_data.squeeze().cpu().numpy(), mode='wb')
-        stoi_score = stoi(org_signal.audio_data.squeeze().cpu().numpy(), dec_signal.audio_data.squeeze().cpu().numpy(), args.sr, extended=False)
-        snr_score = si_snr(dec_signal.audio_data.squeeze(1).cpu(), org_signal.audio_data.squeeze(1).cpu(), reduction=True)
         
-        #  ========  Speaker embeddings  ======== 
-        spk_id = refs_df.loc[uid, "spk_id"] if (uid in refs_df.index) else None
-        emb_ref = get_speaker_embedding(spk_model, org_signal.audio_data.squeeze())
-        emb_dec = get_speaker_embedding(spk_model, dec_signal.audio_data.squeeze())
-        spk_cos = float(np.dot(emb_ref, emb_dec)) / (np.linalg.norm(emb_ref) * np.linalg.norm(emb_dec) + 1e-8)
+        if args.eval_flag:
+            # ======== get wer and cer  ======== 
+            if uid not in org_texts:
+                org_texts[uid] = transcribe_whisper(asr_model, org_signal.audio_data.squeeze())
+            if uid not in dec_texts:
+                dec_texts[uid] = transcribe_whisper(asr_model, dec_signal.audio_data.squeeze())
+
+            spk_id = refs_df.at[uid, "spk_id"] if "spk_id" in refs_df.columns else None
+            wer_ref = jiwer_wer(normalize(gt_txt), normalize(org_texts[uid]))
+            cer_ref = jiwer_cer(normalize(gt_txt), normalize(org_texts[uid]))
+            wer_dec = jiwer_wer(normalize(gt_txt), normalize(dec_texts[uid]))
+            cer_dec = jiwer_cer(normalize(gt_txt), normalize(dec_texts[uid]))
+            delta_wer = wer_dec - wer_ref
+            delta_cer = cer_dec - cer_ref
+            
+            #  ======== PESQ/STOI  ======== 
+            pesq_score = pesq(args.sr, ref=org_signal.audio_data.squeeze().cpu().numpy(), deg=dec_signal.audio_data.squeeze().cpu().numpy(), mode='wb')
+            stoi_score = stoi(org_signal.audio_data.squeeze().cpu().numpy(), dec_signal.audio_data.squeeze().cpu().numpy(), args.sr, extended=False)
+            snr_score = si_snr(dec_signal.audio_data.squeeze(1).cpu(), org_signal.audio_data.squeeze(1).cpu(), reduction=True)
+            
+            #  ========  Speaker embeddings  ======== 
+            spk_id = refs_df.loc[uid, "spk_id"] if (uid in refs_df.index) else None
+            emb_ref = get_speaker_embedding(spk_model, org_signal.audio_data.squeeze())
+            emb_dec = get_speaker_embedding(spk_model, dec_signal.audio_data.squeeze())
+            spk_cos = float(np.dot(emb_ref, emb_dec)) / (np.linalg.norm(emb_ref) * np.linalg.norm(emb_dec) + 1e-8)
+            
+            spk_emb_ref[uid] = emb_ref
+            spk_emb_dec[uid] = emb_dec
+            spk_map[uid] = spk_id
+
+            rows.append({
+                "utt_id": uid,
+                "speaker": spk_id,
+                "WER_ref": wer_ref,
+                "CER_ref": cer_ref,
+                "WER_decoded": wer_dec,
+                "CER_decoded": cer_dec,
+                "Delta_WER": delta_wer,
+                "Delta_CER": delta_cer,
+                "PESQ_wb": pesq_score,
+                "STOI": stoi_score,
+                "SNR": snr_score,
+                "SpkCos": spk_cos,
+                "gt_text": (refs_df.loc[uid, "text"] if (uid in refs_df.index) else None),
+                "text_ref": org_texts[uid], 
+                "text_deg": dec_texts[uid],
+            })
+
+    if args.eval_flag:
+        df = pd.DataFrame(rows)
+        df.to_csv(Path(args.ckpt).parent / args.out_csv, index=False)
+        print(f"\nPer-utterance metrics saved to: {args.out_csv}")
+
+        # ========== Aggregate summary  ========== 
+        def mean_ignore_nan(x):
+            x = [v for v in x if not (isinstance(v, float) and math.isnan(v))]
+            return float(np.mean(x)) if len(x) else np.nan
+
+        summary = {
+            "N": len(df),
+            "WER_ref@GT": mean_ignore_nan(df["WER_ref"].tolist()),
+            "WER_decoded@GT": mean_ignore_nan(df["WER_decoded"].tolist()),
+            "Delta_WER": mean_ignore_nan(df["Delta_WER"].tolist()),
+            "CER_ref@GT": mean_ignore_nan(df["CER_ref"].tolist()),
+            "CER_decoded@GT": mean_ignore_nan(df["CER_decoded"].tolist()),
+            "Delta_CER": mean_ignore_nan(df["Delta_CER"].tolist()),
+            "PESQ_wb": mean_ignore_nan(df["PESQ_wb"].tolist()),
+            "STOI": mean_ignore_nan(df["STOI"].tolist()),
+            "SpkCos": mean_ignore_nan(df["SpkCos"].tolist()),
+            "SNR": mean_ignore_nan(df["SNR"].tolist())
+        }
+
+        #  ==========  EER  ========== 
+        uids = [u for u, s in spk_map.items() if s is not None]
         
-        spk_emb_ref[uid] = emb_ref
-        spk_emb_dec[uid] = emb_dec
-        spk_map[uid] = spk_id
-
-        rows.append({
-            "utt_id": uid,
-            "speaker": spk_id,
-            "WER_ref": wer_ref,
-            "CER_ref": cer_ref,
-            "WER_decoded": wer_dec,
-            "CER_decoded": cer_dec,
-            "Delta_WER": delta_wer,
-            "Delta_CER": delta_cer,
-            "PESQ_wb": pesq_score,
-            "STOI": stoi_score,
-            "SNR": snr_score,
-            "SpkCos": spk_cos,
-            "gt_text": (refs_df.loc[uid, "text"] if (uid in refs_df.index) else None),
-            "text_ref": org_texts[uid], 
-            "text_deg": dec_texts[uid],
-        })
-
-    df = pd.DataFrame(rows)
-    df.to_csv(Path(args.ckpt).parent / args.out_csv, index=False)
-    print(f"\nPer-utterance metrics saved to: {args.out_csv}")
-
-    # ========== Aggregate summary  ========== 
-    def mean_ignore_nan(x):
-        x = [v for v in x if not (isinstance(v, float) and math.isnan(v))]
-        return float(np.mean(x)) if len(x) else np.nan
-
-    summary = {
-        "N": len(df),
-        "WER_ref@GT": mean_ignore_nan(df["WER_ref"].tolist()),
-        "WER_decoded@GT": mean_ignore_nan(df["WER_decoded"].tolist()),
-        "Delta_WER": mean_ignore_nan(df["Delta_WER"].tolist()),
-        "CER_ref@GT": mean_ignore_nan(df["CER_ref"].tolist()),
-        "CER_decoded@GT": mean_ignore_nan(df["CER_decoded"].tolist()),
-        "Delta_CER": mean_ignore_nan(df["Delta_CER"].tolist()),
-        "PESQ_wb": mean_ignore_nan(df["PESQ_wb"].tolist()),
-        "STOI": mean_ignore_nan(df["STOI"].tolist()),
-        "SpkCos": mean_ignore_nan(df["SpkCos"].tolist()),
-        "SNR": mean_ignore_nan(df["SNR"].tolist())
-    }
-
-    #  ==========  EER  ========== 
-    uids = [u for u, s in spk_map.items() if s is not None]
-    
-    same_scores = np.array([np.dot(spk_emb_ref[u], spk_emb_dec[u]) for u in uids], dtype=float)
-    
-    rng = np.random.default_rng(0)
-    diff_scores = []
-    for u in uids:
-        other_uids = [v for v in uids if spk_map[v] != spk_map[u]]
-        if not other_uids:
-            continue
-        neg = rng.choice(other_uids)
-        diff_scores.append(np.dot(spk_emb_ref[u], spk_emb_dec[neg]))
+        same_scores = np.array([np.dot(spk_emb_ref[u], spk_emb_dec[u]) for u in uids], dtype=float)
         
-    diff_scores = np.asarray(diff_scores, dtype=float)
-    
-    if len(diff_scores) >= 10: 
-        summary["eer"] = compute_eer(same_scores, diff_scores)
+        rng = np.random.default_rng(0)
+        diff_scores = []
+        for u in uids:
+            other_uids = [v for v in uids if spk_map[v] != spk_map[u]]
+            if not other_uids:
+                continue
+            neg = rng.choice(other_uids)
+            diff_scores.append(np.dot(spk_emb_ref[u], spk_emb_dec[neg]))
+            
+        diff_scores = np.asarray(diff_scores, dtype=float)
+        
+        if len(diff_scores) >= 10: 
+            summary["eer"] = compute_eer(same_scores, diff_scores)
 
-    print("\n=== Summary ===")
-    for k, v in summary.items():
-        print(f"{k:>18s}: {v:.4f}" if isinstance(v, (float, np.floating)) and not math.isnan(v) else f"{k:>18s}: {v}")
+        print("\n=== Summary ===")
+        for k, v in summary.items():
+            print(f"{k:>18s}: {v:.4f}" if isinstance(v, (float, np.floating)) and not math.isnan(v) else f"{k:>18s}: {v}")
 
-    summary_path = (Path(args.ckpt).parent / args.out_csv).with_suffix(".summary.json")
-    with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
-    print(f"Summary saved to: {summary_path}")
+        summary_path = (Path(args.ckpt).parent / args.out_csv).with_suffix(".summary.json")
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
+        print(f"Summary saved to: {summary_path}")
 
 
 if __name__ == "__main__":

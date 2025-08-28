@@ -23,8 +23,9 @@ source /ext3/env.sh
 export SSL_CERT_FILE=/scratch/lg154/sseg/fs-ood/cacert.pem
 export CUDA_VISIBLE_DEVICES=0
 
-python scripts/train.py --args.load conf/dac_base.yml \
-    --save_path runs_08/cb${NB}_baseline_new/ \
+python scripts/train.py --args.load conf/dac_subset.yml \
     --DAC.n_codebooks ${NB} \
-    --exp_name cb${NB}_baseline_new
+    --save_path runs_subset/cb${NB}_baseline/ \
+    --exp_name cb${NB}_baseline \
+    --proj_name disco_subset 
 "

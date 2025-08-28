@@ -7,11 +7,12 @@
 #SBATCH --mem=80GB
 #SBATCH --time=48:00:00
 #SBATCH --gres=gpu
-#SBATCH --partition=a100_1,a100_2,h100_1,v100,rtx8000
+#SBATCH --partition=a100_1,a100_2,h100_1,v100
 
 CB=$1
 ALIGN=$2
 FILM=$3
+LK=$4
 
 
 # Singularity path
@@ -32,7 +33,7 @@ python scripts/train_disco.py --args.load conf/disco_base.yml \
     --lambdas.align/loss ${ALIGN} \
     --DiscoDAC.film_layer_idx ${FILM} \
     --DiscoDAC.n_codebooks ${CB} \
-    --save_path runs_08/cb${CB}_film${FILM}_align${ALIGN}/ \
-    --exp_name cb${CB}_film${FILM}_align${ALIGN}
-
+    --DiscoDAC.large_kernel ${LK} \
+    --save_path runs_08/cb${CB}_film${FILM}_align${ALIGN}_LK${LK}/ \
+    --exp_name cb${CB}_film${FILM}_align${ALIGN}_LK${LK}
 "

@@ -239,7 +239,7 @@ class DiscoDAC(BaseModel, CodecMixin):
         quantizer_dropout: bool = False,
         sample_rate: int = 44100,
         film_layer_idx: list = '0',
-        large_kernel: bool = False,
+        large_kernel: str = 'f',
     ):
         super().__init__()
 
@@ -256,7 +256,8 @@ class DiscoDAC(BaseModel, CodecMixin):
         self.hop_length = np.prod(encoder_rates[0] + encoder_rates[1])
         self.enc = SharedEncoder(d_model=encoder_dim, strides=encoder_rates[0])
         self.acs_enc = AcousticHead(d_model=self.enc.d_model, strides=encoder_rates[1], d_latent=self.latent_dim)
-        self.sem_enc = SemanticHead(d_model=self.enc.d_model, strides=encoder_rates[2], d_latent=self.latent_dim, large_kernel=large_kernel)
+        large_kernel_flag = False if large_kernel == 'f' else True
+        self.sem_enc = SemanticHead(d_model=self.enc.d_model, strides=encoder_rates[2], d_latent=self.latent_dim, large_kernel=large_kernel_flag)
         
         self.n_codebooks = n_codebooks
         self.codebook_size = codebook_size
