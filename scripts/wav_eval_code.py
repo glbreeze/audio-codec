@@ -26,8 +26,10 @@
 # - BLSTM + CTC (blank=0). Length-normalized CTC for MI proxy (optional).
 # - For DISCRETE: each codebook has its own nn.Embedding; we SUM over codebooks per frame.
 
-import argparse, math, random
+import argparse, math, random, os
 from pathlib import Path
+import wandb
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -40,6 +42,12 @@ import torch.nn.functional as F
 from process_data.asr_data import stoi, itos, build_collate, CodecDataset, build_manifest, text_to_ids, ids_to_text
 from dac.probe_asr.probe_ctc import LatentCTCProbe
 from dac.probe_asr.decoders import ctc_greedy_decode, beam_ctc_decode
+
+
+def namespace_to_dict(ns):
+    if isinstance(ns, (SimpleNamespace, argparse.Namespace)):
+        return {k: namespace_to_dict(v) for k, v in vars(ns).items()}
+    return ns
 
 
 def edit_distance(ref_tokens, hyp_tokens):
@@ -193,7 +201,11 @@ def main():
     ap.add_argument("--epochs", type=int, default=5)
     ap.add_argument("--batch_size", type=int, default=32)
     ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--exp_name", type=str, default='baseline')
     args = ap.parse_args()
+    
+    os.environ["WANDB_MODE"] = "online"
+    wandb.init(project='probe_asr', config=namespace_to_dict(args), name=args.exp_name)
     
     args.device="cuda" if torch.cuda.is_available() else "cpu"
     if "baseline" in args.data_root:
@@ -238,7 +250,19 @@ def main():
 
     for ep in range(1, args.epochs+1):
         tr_wer, tr_cer, tr_loss, tr_mi = run_epoch(model, tr_loader, optimizer=opt, device=args.device, codebooks=codebooks, input_type=args.input_type, dec_scheme='greedy')
+        wandb.log({
+            'train/wer':tr_wer, 
+            'train/cer':tr_cer,
+            'train/loss':tr_loss,
+            'train/mi':tr_mi,
+            }, step=ep)
         dv_wer, dv_cer, dv_loss, dv_mi = run_epoch(model, ev_loader, optimizer=None, device=args.device, codebooks=codebooks, input_type=args.input_type, dec_scheme='beam')
+        wandb.log({
+            'val/wer':dv_wer, 
+            'val/cer':dv_cer,
+            'val/loss':dv_loss,
+            'val/mi':dv_mi,
+            }, step=ep)
 
         print(f"[ep {ep:02d}] train WER={tr_wer:.3f} CER={tr_cer:.3f} loss={tr_loss:.3f} MI={tr_mi:.3f} | dev WER={dv_wer:.3f} CER={dv_cer:.3f} loss={dv_loss:.3f} MI={dv_mi:.3f}")
 
