@@ -104,7 +104,7 @@ class ResidualVectorQuantize(nn.Module):
         self,
         input_dim: int = 512,
         n_codebooks: int = 9,
-        codebook_size: int = 1024,
+        codebook_size: Union[int, list] = 1024,
         codebook_dim: Union[int, list] = 8,
         quantizer_dropout: float = 0.0,
     ):
@@ -116,9 +116,15 @@ class ResidualVectorQuantize(nn.Module):
         self.codebook_dim = codebook_dim
         self.codebook_size = codebook_size
 
+        if isinstance(codebook_size, int):
+            codebook_sizes = [codebook_size] * n_codebooks
+        else:
+            first, rest = codebook_size
+            codebook_sizes = [first] + [rest] * (n_codebooks - 1)
+            
         self.quantizers = nn.ModuleList(
             [
-                VectorQuantize(input_dim, codebook_size, codebook_dim[i])
+                VectorQuantize(input_dim, codebook_sizes[i], codebook_dim[i])
                 for i in range(n_codebooks)
             ]
         )

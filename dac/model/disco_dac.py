@@ -17,6 +17,7 @@ from dac.nn.quantize import ResidualVectorQuantize, VectorQuantize
 from dac.nn.custom_layers import Fp32LayerNorm, TransposeLast
 
 from dac.model.dac import ResidualUnit, EncoderBlock, init_weights, DecoderBlock
+from dac.nn.conformer_layer import ConformerWav2Vec2EncoderLayer
 
 
 class SharedEncoder(nn.Module):
@@ -64,6 +65,7 @@ class SemanticHead(nn.Module):
         activation_fn="gelu",
         layer_norm_first=True,
         large_kernel=False,
+        new_sem = False,
     ):
         super().__init__()
 
@@ -96,20 +98,32 @@ class SemanticHead(nn.Module):
             ]
         self.pre_conv = nn.Sequential(*self.pre_conv)
 
-        self.transformer_layers = nn.ModuleList([
-            TransformerSentenceEncoderLayer(
-                embedding_dim=d_model,
-                ffn_embedding_dim=d_model*4,
-                num_attention_heads=n_heads,
+        if new_sem:
+            print('===use new semanticHead==')
+            self.transformer_layers = nn.ModuleList([
+            ConformerWav2Vec2EncoderLayer(
+                embed_dim=d_model,
+                ffn_embed_dim=d_model*4,
+                attention_heads=n_heads,
                 dropout=dropout,
-                attention_dropout=dropout,
-                activation_dropout=0.0,
-                activation_fn=activation_fn,
-                layer_norm_first=layer_norm_first,
-            )
+                depthwise_conv_kernel_size=31,
+                use_fp16 = False,)
             for _ in range(n_transformer)
-        ])
-
+            ])
+        else:
+            self.transformer_layers = nn.ModuleList([
+                TransformerSentenceEncoderLayer(
+                    embedding_dim=d_model,
+                    ffn_embedding_dim=d_model*4,
+                    num_attention_heads=n_heads,
+                    dropout=dropout,
+                    attention_dropout=dropout,
+                    activation_dropout=0.0,
+                    activation_fn=activation_fn,
+                    layer_norm_first=layer_norm_first,)
+                for _ in range(n_transformer)
+            ])
+            
         self.project = nn.Sequential(
             Fp32LayerNorm(d_model, elementwise_affine=True), # [B, T, C]
             TransposeLast(),  # [B, C, T]
@@ -132,30 +146,42 @@ class SemanticHead(nn.Module):
 
 
 class FiLMGenerator(nn.Module):
-    def __init__(self, in_dim, out_dim, hidden_dim=128, kernel_size=3, depth=2, strides = []):
+    def __init__(self, in_dim, out_dim, hidden_dim=128, kernel_size=3, depth=2, strides = [], new_film=False):
         super().__init__()
+        self.new_film = new_film
+        
         layers = []
         for i in range(depth):
             dim_in = in_dim if i == 0 else hidden_dim
             layers.append(nn.Conv1d(dim_in, hidden_dim, kernel_size, padding=kernel_size//2))
+            if new_film:
+                layers.append(nn.GroupNorm(8, hidden_dim))
             layers.append(nn.ReLU())
         self.shared_net = nn.Sequential(*layers)
         
         if len(strides) > 0:
             upsample_layers = []
+            
             for stride in strides:
-                
-                if stride % 2 == 0:
-                    pad_left = pad_right = stride//2
+                if new_film:
+                    upsample_layers.extend([
+                        nn.Upsample(scale_factor=stride, mode="nearest"),
+                        nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+                        nn.GroupNorm(8, hidden_dim),
+                        nn.ReLU()])
+                    
                 else:
-                    pad_left = stride//2 + 1
-                    pad_right = stride//2
-                
-                upsample_layers.extend([
-                    AsymmetricPad1d(pad_left, pad_right),
-                    nn.ConvTranspose1d(hidden_dim, hidden_dim, kernel_size=stride*2, stride=stride, padding=0),
-                    nn.ReLU()
-                    ])
+                    if stride % 2 == 0:
+                        pad_left = pad_right = stride//2
+                    else:
+                        pad_left = stride//2 + 1
+                        pad_right = stride//2
+                        
+                    upsample_layers.extend([
+                        AsymmetricPad1d(pad_left, pad_right),
+                        nn.ConvTranspose1d(hidden_dim, hidden_dim, kernel_size=stride*2, stride=stride, padding=0),
+                        nn.ReLU()
+                        ])
             self.upsample = nn.Sequential(*upsample_layers)
         else:
             self.upsample = nn.Identity()
@@ -173,9 +199,10 @@ class FiLMGenerator(nn.Module):
 
 class Decoder(nn.Module):
     def __init__(self, input_channel, channels, rates, d_out = 1, 
-                 film_layers_idx=[1],):
+                 film_layers_idx=[1], new_film=False):
         super().__init__()
         print(f"--check model structure, film layers are {film_layers_idx}")
+        print(f"new film is {new_film}")
 
         # Add first conv layer
         self.pre_conv = WNConv1d(input_channel, channels, kernel_size=7, padding=3)
@@ -199,7 +226,8 @@ class Decoder(nn.Module):
         self.films = nn.ModuleDict()
         for film_idx in self.film_layers_idx:
             film_channels = channels // 2 ** film_idx
-            self.films[str(film_idx)] = FiLMGenerator(in_dim = input_channel, out_dim=film_channels, strides=rates[0:film_idx])
+            hidden_dim = 256 if new_film else 128
+            self.films[str(film_idx)] = FiLMGenerator(in_dim = input_channel, out_dim=film_channels, strides=rates[0:film_idx], new_film=new_film, hidden_dim=hidden_dim)
 
     def forward(self, z_acs, z_sem):
         z = self.pre_conv(z_acs)
@@ -240,6 +268,8 @@ class DiscoDAC(BaseModel, CodecMixin):
         sample_rate: int = 44100,
         film_layer_idx: list = '0',
         large_kernel: str = 'f',
+        new_sem: str = 'f',
+        new_film: str = 'f',
     ):
         super().__init__()
 
@@ -248,6 +278,10 @@ class DiscoDAC(BaseModel, CodecMixin):
         self.decoder_dim = decoder_dim
         self.decoder_rates = decoder_rates
         self.sample_rate = sample_rate
+        
+        large_kernel_flag = False if large_kernel == 'f' else True
+        new_sem_flag = False if new_sem=='f' else True
+        new_film_flag = False if new_film=='f' else True
 
         if latent_dim is None:
             latent_dim = encoder_dim * (2 ** len(encoder_rates))
@@ -256,8 +290,7 @@ class DiscoDAC(BaseModel, CodecMixin):
         self.hop_length = np.prod(encoder_rates[0] + encoder_rates[1])
         self.enc = SharedEncoder(d_model=encoder_dim, strides=encoder_rates[0])
         self.acs_enc = AcousticHead(d_model=self.enc.d_model, strides=encoder_rates[1], d_latent=self.latent_dim)
-        large_kernel_flag = False if large_kernel == 'f' else True
-        self.sem_enc = SemanticHead(d_model=self.enc.d_model, strides=encoder_rates[2], d_latent=self.latent_dim, large_kernel=large_kernel_flag)
+        self.sem_enc = SemanticHead(d_model=self.enc.d_model, strides=encoder_rates[2], d_latent=self.latent_dim, large_kernel=large_kernel_flag, new_sem=new_sem_flag)
         
         self.n_codebooks = n_codebooks
         self.codebook_size = codebook_size
@@ -280,6 +313,7 @@ class DiscoDAC(BaseModel, CodecMixin):
             decoder_dim,
             decoder_rates,
             film_layers_idx=[int(i) for i in list(film_layer_idx)],
+            new_film=new_film_flag,
         )
         
         self.proj_sem = nn.Sequential(
