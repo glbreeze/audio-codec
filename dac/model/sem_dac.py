@@ -58,7 +58,7 @@ class FiLMGenerator(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(self, input_channel, channels, rates, d_out = 1, 
+    def __init__(self, input_channel, input_channel_sem, channels, rates, d_out = 1, 
                  film_layers_idx=[1],):
         super().__init__()
         print(f"--check model structure, film layers are {film_layers_idx}")
@@ -85,7 +85,7 @@ class Decoder(nn.Module):
         self.films = nn.ModuleDict()
         for film_idx in self.film_layers_idx:
             film_channels = channels // 2 ** film_idx
-            self.films[str(film_idx)] = FiLMGenerator(in_dim = input_channel, out_dim=film_channels, strides=rates[0:film_idx])
+            self.films[str(film_idx)] = FiLMGenerator(in_dim = input_channel_sem, out_dim=film_channels, strides=rates[0:film_idx])
 
     def forward(self, z_acs, z_sem):
         z = self.pre_conv(z_acs)
@@ -153,13 +153,14 @@ class SemDAC(BaseModel, CodecMixin):
         
         self.decoder = Decoder(
             latent_dim,
+            self.codebook_dim,
             decoder_dim,
             decoder_rates,
             film_layers_idx=[int(i) for i in list(film_layer_idx)],
         )
         
         self.proj_sem = nn.Sequential(
-            nn.Conv1d(latent_dim, latent_dim, kernel_size=1),  # or Linear if shape is [B, T, D]
+            nn.Conv1d(self.codebook_dim, latent_dim, kernel_size=1),  # or Linear if shape is [B, T, D]
             nn.GELU(),
             nn.Conv1d(latent_dim, 768, kernel_size=1)
         )
@@ -203,7 +204,7 @@ class SemDAC(BaseModel, CodecMixin):
         
         out = self.encode(audio_data, n_quantizers=n_quantizers)
 
-        z_sem = out['latents'][0]
+        z_sem = out['latents'][:, :self.codebook_dim, :]
         z_acs = out['z']
         e_sem = self.proj_sem(z_sem)           # [B, 512, T/320]
         x = self.decode(z_acs, z_sem)   # [B, 1, T]

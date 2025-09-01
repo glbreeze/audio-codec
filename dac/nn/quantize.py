@@ -55,8 +55,8 @@ class VectorQuantize(nn.Module):
         """
 
         # Factorized codes (ViT-VQGAN) Project input into low-dimensional space
-        z_e = self.in_proj(z)  # z_e : (B x D x T)
-        z_q, indices = self.decode_latents(z_e)
+        z_e = self.in_proj(z)  # [B, 1014, T] -> z_e : (B, 8, T)
+        z_q, indices = self.decode_latents(z_e) # [B, 8, T]
 
         commitment_loss = F.mse_loss(z_e, z_q.detach(), reduction="none").mean([1, 2])
         codebook_loss = F.mse_loss(z_q, z_e.detach(), reduction="none").mean([1, 2])
@@ -65,7 +65,7 @@ class VectorQuantize(nn.Module):
             z_e + (z_q - z_e).detach()
         )  # noop in forward pass, straight-through gradient estimator in backward pass
 
-        z_q = self.out_proj(z_q)
+        z_q = self.out_proj(z_q) # [B, 8, T] -> [B, 1024, T]
 
         return z_q, commitment_loss, codebook_loss, indices, z_e
 
@@ -182,13 +182,13 @@ class ResidualVectorQuantize(nn.Module):
 
             z_q_i, commitment_loss_i, codebook_loss_i, indices_i, z_e_i = quantizer(
                 residual
-            )
+            )  # z_q_i [B, 1024, T] z_e_i [B, 8, T]
 
             # Create mask to apply quantizer dropout
             mask = (
                 torch.full((z.shape[0],), fill_value=i, device=z.device) < n_quantizers
             )
-            z_q = z_q + z_q_i * mask[:, None, None]
+            z_q = z_q + z_q_i * mask[:, None, None]  # [B, 1024, T]
             residual = residual - z_q_i
 
             # Sum losses
@@ -196,12 +196,12 @@ class ResidualVectorQuantize(nn.Module):
             codebook_loss += (codebook_loss_i * mask).mean()
 
             codebook_indices.append(indices_i)
-            latents.append(z_e_i)
+            latents.append(z_e_i)     # [B, 8, T]
 
         codes = torch.stack(codebook_indices, dim=1)
         latents = torch.cat(latents, dim=1)
 
-        return z_q, codes, latents, commitment_loss, codebook_loss
+        return z_q, codes, latents, commitment_loss, codebook_loss  # z_q: [B, 1024, T], latents: [B, 9*8, T]
 
     def from_codes(self, codes: torch.Tensor):
         """Given the quantized codes, reconstruct the continuous representation
