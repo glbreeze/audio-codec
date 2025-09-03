@@ -151,12 +151,13 @@ class SemDAC(BaseModel, CodecMixin):
             quantizer_dropout=quantizer_dropout,
         )
         
+        if film_layer_idx == 'null': film_layer_idx = ""
         self.decoder = Decoder(
             latent_dim,
             self.codebook_dim,
             decoder_dim,
             decoder_rates,
-            film_layers_idx=[int(i) for i in list(film_layer_idx)],
+            film_layers_idx=[int(i) for i in list(film_layer_idx.strip())],
         )
         
         self.proj_sem = nn.Sequential(
