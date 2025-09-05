@@ -30,8 +30,26 @@ from transformers import HubertModel, Wav2Vec2Processor, Wav2Vec2FeatureExtracto
 
 import dac
 from utils import si_snr
+import signal
+import sys
 
 warnings.filterwarnings("ignore", category=UserWarning)
+
+# graceful exit handler to flush W&B logs
+def handle_exit(signum, frame):
+    print(f"[Signal Handler] Caught signal {signum}, flushing W&B and exiting...")
+    try:
+        import wandb
+        if wandb.run is not None:
+            wandb.finish()
+    except Exception as e:
+        print(f"[Signal Handler] wandb.finish() failed: {e}")
+    sys.exit(0)
+
+# register handler for scheduler pre-kill (SIGTERM) and Ctrl-C (SIGINT)
+signal.signal(signal.SIGTERM, handle_exit)
+signal.signal(signal.SIGINT, handle_exit)
+
 
 def namespace_to_dict(ns):
     if isinstance(ns, (SimpleNamespace, argparse.Namespace)):
@@ -54,7 +72,7 @@ def ExponentialLR(optimizer, gamma: float = 1.0):
 
 
 # Models
-DiscoDAC = argbind.bind(dac.model.DiscoDAC)
+SemDAC = argbind.bind(dac.model.SemDAC)
 Discriminator = argbind.bind(dac.model.Discriminator)
 
 # Data
@@ -118,7 +136,7 @@ def build_dataset(
 
 @dataclass
 class State:
-    generator: DiscoDAC
+    generator: SemDAC
     optimizer_g: AdamW
     scheduler_g: ExponentialLR
 
@@ -150,6 +168,7 @@ def load(
     generator, g_extra = None, {}
     discriminator, d_extra = None, {}
 
+    import pdb; pdb.set_trace()
     if resume:
         kwargs = {
             "folder": f"{save_path}/{tag}",
@@ -158,11 +177,11 @@ def load(
         }
         print(f"Resuming from {str(Path('.').absolute())}/{kwargs['folder']}")
         if (Path(kwargs["folder"]) / "dac").exists():
-            generator, g_extra = DiscoDAC.load_from_folder(**kwargs)
+            generator, g_extra = SemDAC.load_from_folder(**kwargs)
         if (Path(kwargs["folder"]) / "discriminator").exists():
             discriminator, d_extra = Discriminator.load_from_folder(**kwargs)
 
-    generator = DiscoDAC() if generator is None else generator
+    generator = SemDAC() if generator is None else generator
     discriminator = Discriminator() if discriminator is None else discriminator
 
     print(generator)
@@ -299,10 +318,8 @@ def train_loop(state, batch, accel, lambdas, hubert_model, hubert_processor, hub
         output["waveform/loss"] = state.waveform_loss(recons, signal)  # did not use 
         output["mel/loss"] = state.mel_loss(recons, signal)
         output["adv/gen_loss"], output["adv/feat_loss"] = state.gan_loss.generator_loss(recons, signal)
-        output["vq/commit_loss_acs"] = out["vq/commit_loss_acs"]
-        output["vq/commit_loss_sem"] = out["vq/commit_loss_sem"]
-        output["vq/codebook_loss_acs"] = out["vq/codebook_loss_acs"]
-        output["vq/codebook_loss_sem"] = out["vq/codebook_loss_sem"]
+        output["vq/commit_loss"] = out["vq/commit_loss"]
+        output["vq/codebook_loss"] = out["vq/codebook_loss"]
         hubert_aligned = F.interpolate(hubert_emb.transpose(1, 2), size=out["e_sem"].shape[-1], mode="linear", align_corners=False)
         output["align/loss"] = state.align_loss(out["e_sem"], hubert_aligned.float())
 
@@ -419,13 +436,17 @@ def train(
     },
     exp_name: str = "baseline",
     hubert_layer: int = 12,
+    run_id: str = 'null',
 ):
     if accel.local_rank == 0:
         wandb.login()
         os.environ["WANDB_MODE"] = "online"
         os.environ["WANDB_CACHE_DIR"] = "/scratch/lg154/sseg/.cache/wandb"
         os.environ["WANDB_CONFIG_DIR"] = "/scratch/lg154/sseg/.config/wandb"
-        wandb.init(project=proj_name, config=namespace_to_dict(args), name=exp_name)
+        if run_id in ['null', '']:
+            wandb.init(project=proj_name, config=namespace_to_dict(args), name=exp_name)
+        else:
+            wandb.init(project=proj_name, name=exp_name, id=run_id, resume="must")
 
     util.seed(seed)
     Path(save_path).mkdir(exist_ok=True, parents=True)

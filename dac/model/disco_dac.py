@@ -257,7 +257,7 @@ class DiscoDAC(BaseModel, CodecMixin):
         self,
         encoder_dim = 64,
         encoder_rates = [[2, 4], [8, 8], [2, 2, 2, 2, 2, 2]],
-        latent_dim = None,
+        latent_dim = 512,
         decoder_dim = 1536,
         decoder_rates = [8, 8, 4, 2],
         n_codebooks = 9,

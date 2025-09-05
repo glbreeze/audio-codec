@@ -123,7 +123,7 @@ class SemDAC(BaseModel, CodecMixin):
         codebook_dim: Union[int, list] = 8,
         quantizer_dropout: bool = False,
         sample_rate: int = 44100,
-        film_layer_idx: list = '0',
+        film_layer_idx: str = '0',
     ):
         super().__init__()
 

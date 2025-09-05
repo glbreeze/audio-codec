@@ -5,6 +5,12 @@ __pycache__/
 runs/
 wandb/
 *.out
+runs_08/
+runs_mus/
+runs_subset/
+*.pt
+pretrained_ecapa/
+*.txt
 
 # C extensions
 *.so

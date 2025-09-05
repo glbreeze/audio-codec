@@ -1,11 +1,24 @@
-python scripts/wave_eval.py \
-  --org_dir ../datasets/LibriSpeech/test-clean \
-  --cfg_yml conf/disco_base.yml \
-  --ckpt runs/libri3_film0_align1_hbt9/best \
+
+export PYTHONPATH=$PWD:$PYTHONPATH
+
+
+python scripts/wav_eval.py \
+  --org_dir /vast/lg154/datasets/LibriSpeech/test-clean \
+  --cfg_yml conf/dac_base.yml \
+  --ckpt runs_08/cb3_baseline/latest \
   --sr 16000 --cb 3
 
+python scripts/wav_eval.py \
+  --org_dir /vast/lg154/datasets/LibriSpeech/test-clean \
+  --cfg_yml conf/disco_base.yml \
+  --ckpt runs_08/cb2_film03_align1/latest \
+  --sr 16000 --cb 2
 
-python scripts/wave_eval.py \
+
+
+
+
+python scripts/wav_eval.py \
   --org_dir ../datasets/LibriSpeech/test-clean \
   --cfg_yml conf/disco_base.yml \
   --ckpt runs/libri3_film03_align1_hbt9/best \
@@ -63,8 +76,10 @@ python scripts/wave_eval.py \
 
 
   python scripts/wav_eval_code.py \
-    --data_root runs/libri3_film03_align1_hbt9/ld/ \
-    --input_type discrete 
+    --data_root runs_08/cb3_baseline/asr_data/ \
+    --input_type discrete \
+    --epochs 50 \
+    --n_codebooks -1 
 
 
 
