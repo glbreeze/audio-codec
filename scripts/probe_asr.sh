@@ -25,7 +25,7 @@ singularity exec --nv --overlay /scratch/lg154/python_3D/overlay-25GB-500K.ext3:
             --input_type discrete \
             --epochs 100 \
             --n_codebooks -1 \
-            2>&1 | tee -a './logs/probe_dac_allcodes.txt'
+            --exp_name dac_all
         
         echo 'Running Probe ASR on DiscoDAC codes with all codes...'
 
@@ -34,5 +34,5 @@ singularity exec --nv --overlay /scratch/lg154/python_3D/overlay-25GB-500K.ext3:
             --input_type discrete \
             --epochs 100 \
             --n_codebooks -1 \
-            2>&1 | tee -a './logs/probe_discodac_allcodes.txt'
+            --exp_name disco_all
     "

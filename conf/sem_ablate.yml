@@ -8,7 +8,7 @@ SemDAC.film_layer_idx: "03"
 
 # Quantization
 SemDAC.n_codebooks: 5
-SemDAC.codebook_size: [512, 1024]
+SemDAC.codebook_size: [1024, 1024]
 SemDAC.codebook_dim: 8
 SemDAC.quantizer_dropout: 1.0
 

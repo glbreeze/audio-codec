@@ -28,7 +28,27 @@ from torch.utils.tensorboard import SummaryWriter
 import dac
 from utils import si_snr
 
+import signal
+import sys
+
 warnings.filterwarnings("ignore", category=UserWarning)
+
+# graceful exit handler to flush W&B logs
+def handle_exit(signum, frame):
+    print(f"[Signal Handler] Caught signal {signum}, flushing W&B and exiting...")
+    try:
+        import wandb
+        if wandb.run is not None:
+            wandb.finish()
+    except Exception as e:
+        print(f"[Signal Handler] wandb.finish() failed: {e}")
+    sys.exit(0)
+
+# register handler for scheduler pre-kill (SIGTERM) and Ctrl-C (SIGINT)
+signal.signal(signal.SIGTERM, handle_exit)
+signal.signal(signal.SIGINT, handle_exit)
+
+
 
 def namespace_to_dict(ns):
     if isinstance(ns, (SimpleNamespace, argparse.Namespace)):

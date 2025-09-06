@@ -1,19 +1,20 @@
 # Model setup
-SemDAC.sample_rate: 16000
-SemDAC.encoder_dim: 64
-SemDAC.encoder_rates: [2, 4, 5, 8]
-SemDAC.decoder_dim: 1536
-SemDAC.decoder_rates: [8, 5, 4, 2]
-SemDAC.film_layer_idx: "03"
+DiscoDAC.sample_rate: 44100
+DiscoDAC.encoder_dim: 64
+DiscoDAC.encoder_rates: [[2, 4], [8, 8], [2, 2, 2, 2, 4]]
+DiscoDAC.decoder_dim: 1536
+DiscoDAC.decoder_rates: [8, 8, 4, 2]
+DiscoDAC.film_layer_idx: "03"
 
 # Quantization
-SemDAC.n_codebooks: 5
-SemDAC.codebook_size: [512, 1024]
-SemDAC.codebook_dim: 8
-SemDAC.quantizer_dropout: 1.0
+DiscoDAC.n_codebooks: 3
+DiscoDAC.codebook_size: 1024
+DiscoDAC.sem_codebook_size: 512
+DiscoDAC.codebook_dim: 8
+DiscoDAC.quantizer_dropout: 1.0
 
 # Discriminator
-Discriminator.sample_rate: 16000
+Discriminator.sample_rate: 44100
 Discriminator.rates: []
 Discriminator.periods: [2, 3, 5, 7, 11]
 Discriminator.fft_sizes: [2048, 1024, 512]
@@ -32,8 +33,8 @@ ExponentialLR.gamma: 0.999996
 amp: false
 val_batch_size: 100
 device: cuda
-num_iters: 250000
-save_iters: [10000, 50000, 100000, 200000]
+num_iters: 350000
+save_iters: [10000, 50000, 100000, 200000, 300000]
 valid_freq: 1000
 sample_freq: 10000
 num_workers: 32
@@ -43,8 +44,10 @@ lambdas:
   mel/loss: 15.0
   adv/feat_loss: 2.0
   adv/gen_loss: 1.0
-  vq/commit_loss: 0.25
-  vq/codebook_loss: 1.0
+  vq/commit_loss_acs: 0.25
+  vq/codebook_loss_acs: 1.0
+  vq/commit_loss_sem: 0.25
+  vq/codebook_loss_sem: 1.0
   align/loss: 1.0
 
 VolumeNorm.db: [const, -16]
@@ -89,16 +92,16 @@ AudioDataset.without_replacement: true
 
 train/build_dataset.folders:
   speech_fb:
-    - /scratch/lg154/sseg/datasets/LibriSpeech/train-clean-100
+    - /vast/lg154/datasets/musdb_vocals/train
 
 val/build_dataset.folders:
   speech_fb:
-    - /scratch/lg154/sseg/datasets/LibriSpeech/test-clean
+    - /vast/lg154/datasets/musdb_vocals/test
 test/build_dataset.folders:
   speech_fb:
-    - /scratch/lg154/sseg/datasets/LibriSpeech/test-clean
+    - /vast/lg154/datasets/musdb_vocals/test
   
+
 hubert_layer: 9
 exp_name: baseline
-save_path: filepath
 

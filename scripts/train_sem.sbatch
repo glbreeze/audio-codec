@@ -9,7 +9,8 @@
 #SBATCH --gres=gpu
 #SBATCH --partition=a100_1,a100_2,h100_1,v100
 
-NB=$1
+CB=$1
+FILM=$2
 
 # Singularity path
 ext3_path=/scratch/$USER/python11/overlay-25GB-500K.ext3
@@ -20,13 +21,19 @@ singularity exec --nv --overlay /scratch/lg154/python11/overlay-25GB-500K.ext3:r
 /scratch/lg154/python11/cuda11.8.86-cudnn8.7-devel-ubuntu22.04.2.sif \
 /bin/bash -c "
 source /ext3/env.sh
-export SSL_CERT_FILE=/scratch/lg154/sseg/fs-ood/cacert.pem
+export SSL_CERT_FILE=/scratch/lg154/sseg/cacert.pem
 export CUDA_VISIBLE_DEVICES=0
+export NUMBA_DISABLE_CACHE=1
 
-python scripts/train.py --args.load conf/dac_base.yml \
-    --save_path runs_08/cb${NB}_baseline_48_long/ \
-    --DAC.n_codebooks ${NB} \
+
+python scripts/train_sem.py --args.load conf/sem_base.yml \
+    --hubert_layer 9 \
+    --lambdas.align/loss 1 \
+    --SemanticEmbedLoss.loss_type l2 \
+    --SemDAC.n_codebooks ${CB} \
+    --SemDAC.film_layer_idx ${FILM} \
     --batch_size 48 \
-    --exp_name cb${NB}_baseline_48_long \
-    --val_batch_size 64
+    --save_path runs_08/sem_cb${CB}_film${FILM}_long/ \
+    --exp_name sem_cb${CB}_film${FILM}_long
 "
+

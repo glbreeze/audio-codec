@@ -7,13 +7,11 @@
 #SBATCH --mem=80GB
 #SBATCH --time=48:00:00
 #SBATCH --gres=gpu
-#SBATCH --partition=a100_1,a100_2,h100_1,v100
+#SBATCH --partition=a100_1,a100_2,h100_1,v100,rtx8000
 
 CB=$1
-ALIGN=$2
-FILM=$3
-LK=$4
-
+FILM=$2
+ALIGN=$3
 
 # Singularity path
 ext3_path=/scratch/$USER/python11/overlay-25GB-500K.ext3
@@ -30,10 +28,20 @@ export NUMBA_DISABLE_CACHE=1
 
 python scripts/train_disco.py --args.load conf/disco_base.yml \
     --hubert_layer 9 \
-    --lambdas.align/loss ${ALIGN} \
-    --DiscoDAC.film_layer_idx ${FILM} \
+    --lambdas.align/loss 1 \
+    --SemanticEmbedLoss.loss_type l2 \
     --DiscoDAC.n_codebooks ${CB} \
-    --DiscoDAC.large_kernel ${LK} \
-    --save_path runs_08/cb${CB}_film${FILM}_align${ALIGN}_LK${LK}/ \
-    --exp_name cb${CB}_film${FILM}_align${ALIGN}_LK${LK}
+    --DiscoDAC.film_layer_idx ${FILM} \
+    --DiscoDAC.large_kernel f \
+    --DiscoDAC.latent_dim 1024 \
+    --batch_size 48 \
+    --save_path runs_08/cb${CB}_film${FILM}_align${ALIGN}_ld48/ \
+    --exp_name cb${CB}_film${FILM}_align${ALIGN}_ld48
 "
+
+# NS=$4
+# NF=$5
+# --DiscoDAC.new_sem ${NS} \
+# --DiscoDAC.new_film ${NF} \
+# --save_path runs_08/cb${CB}_film${FILM}_LK${LK}_NS${NS}_NF${NF}/ \
+# --exp_name cb${CB}_film${FILM}_LK${LK}_NS${NS}_NF${NF}

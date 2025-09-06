@@ -1,16 +1,15 @@
 # Model setup
-SemDAC.sample_rate: 16000
-SemDAC.encoder_dim: 64
-SemDAC.encoder_rates: [2, 4, 5, 8]
-SemDAC.decoder_dim: 1536
-SemDAC.decoder_rates: [8, 5, 4, 2]
-SemDAC.film_layer_idx: "03"
+DAC.sample_rate: 16000
+DAC.encoder_dim: 64
+DAC.encoder_rates: [2, 4, 5, 8]
+DAC.decoder_dim: 1536
+DAC.decoder_rates: [8, 5, 4, 2]
 
 # Quantization
-SemDAC.n_codebooks: 5
-SemDAC.codebook_size: [512, 1024]
-SemDAC.codebook_dim: 8
-SemDAC.quantizer_dropout: 1.0
+DAC.n_codebooks: 4
+DAC.codebook_size: 1024
+DAC.codebook_dim: 8
+DAC.quantizer_dropout: 1.0
 
 # Discriminator
 Discriminator.sample_rate: 16000
@@ -32,8 +31,8 @@ ExponentialLR.gamma: 0.999996
 amp: false
 val_batch_size: 100
 device: cuda
-num_iters: 250000
-save_iters: [10000, 50000, 100000, 200000]
+num_iters: 350000
+save_iters: [10000, 50000, 100000, 200000, 300000]
 valid_freq: 1000
 sample_freq: 10000
 num_workers: 32
@@ -43,9 +42,8 @@ lambdas:
   mel/loss: 15.0
   adv/feat_loss: 2.0
   adv/gen_loss: 1.0
-  vq/commit_loss: 0.25
+  vq/commitment_loss: 0.25
   vq/codebook_loss: 1.0
-  align/loss: 1.0
 
 VolumeNorm.db: [const, -16]
 
@@ -69,7 +67,6 @@ MelSpectrogramLoss.mel_fmax: [null, null, null, null, null, null, null]
 MelSpectrogramLoss.pow: 1.0
 MelSpectrogramLoss.clamp_eps: 1.0e-5
 MelSpectrogramLoss.mag_weight: 0.0
-SemanticEmbedLoss.loss_type: l2
 
 # Data
 batch_size: 72
@@ -89,16 +86,13 @@ AudioDataset.without_replacement: true
 
 train/build_dataset.folders:
   speech_fb:
-    - /scratch/lg154/sseg/datasets/LibriSpeech/train-clean-100
+    - /vast/lg154/datasets/LibriSpeech/train-clean-100
 
 val/build_dataset.folders:
   speech_fb:
-    - /scratch/lg154/sseg/datasets/LibriSpeech/test-clean
+    - /vast/lg154/datasets/LibriSpeech/test-clean
 test/build_dataset.folders:
   speech_fb:
-    - /scratch/lg154/sseg/datasets/LibriSpeech/test-clean
-  
-hubert_layer: 9
-exp_name: baseline
-save_path: filepath
+    - /vast/lg154/datasets/LibriSpeech/test-clean
 
+exp_name: baseline

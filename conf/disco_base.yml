@@ -7,8 +7,9 @@ DiscoDAC.decoder_rates: [8, 5, 4, 2]
 DiscoDAC.film_layer_idx: "03"
 
 # Quantization
-DiscoDAC.n_codebooks: 5
+DiscoDAC.n_codebooks: 3
 DiscoDAC.codebook_size: 1024
+DiscoDAC.sem_codebook_size: 512
 DiscoDAC.codebook_dim: 8
 DiscoDAC.quantizer_dropout: 1.0
 
@@ -30,10 +31,10 @@ AdamW.lr: 0.0001
 ExponentialLR.gamma: 0.999996
 
 amp: false
-val_batch_size: 100
+val_batch_size: 64
 device: cuda
-num_iters: 250000
-save_iters: [10000, 50000, 100000, 200000]
+num_iters: 350000
+save_iters: [10000, 50000, 100000, 200000, 300000]
 valid_freq: 1000
 sample_freq: 10000
 num_workers: 32
@@ -74,7 +75,7 @@ MelSpectrogramLoss.mag_weight: 0.0
 SemanticEmbedLoss.loss_type: l2
 
 # Data
-batch_size: 72
+batch_size: 32
 train/AudioDataset.duration: 0.38
 train/AudioDataset.n_examples: 10000000
 
@@ -100,9 +101,6 @@ test/build_dataset.folders:
   speech_fb:
     - /vast/lg154/datasets/LibriSpeech/test-clean
   
-batch_size: 12
-val_batch_size: 12
-num_workers: 4
 hubert_layer: 9
 exp_name: baseline
 

@@ -50,6 +50,15 @@ def handle_exit(signum, frame):
 signal.signal(signal.SIGTERM, handle_exit)
 signal.signal(signal.SIGINT, handle_exit)
 
+def tag_to_step(tag: str) -> int:
+    tag = tag.lower().strip()
+    if tag.endswith("k"):
+        return int(tag[:-1]) * 1000
+    elif tag.endswith("m"):  # e.g. "1m" = 1,000,000
+        return int(tag[:-1]) * 1_000_000
+    else:
+        return int(tag)
+
 
 def namespace_to_dict(ns):
     if isinstance(ns, (SimpleNamespace, argparse.Namespace)):
@@ -165,24 +174,28 @@ def load(
     tag: str = "latest",
     load_weights: bool = False,
 ):
-    generator, g_extra = None, {}
-    discriminator, d_extra = None, {}
-
-    import pdb; pdb.set_trace()
+    generator = SemDAC() 
+    discriminator = Discriminator()
+    optim_g, sched_g = None, None
+    optim_d, sched_d = None, None
+    
     if resume:
-        kwargs = {
-            "folder": f"{save_path}/{tag}",
-            "map_location": "cpu",
-            "package": not load_weights,
-        }
-        print(f"Resuming from {str(Path('.').absolute())}/{kwargs['folder']}")
-        if (Path(kwargs["folder"]) / "dac").exists():
-            generator, g_extra = SemDAC.load_from_folder(**kwargs)
-        if (Path(kwargs["folder"]) / "discriminator").exists():
-            discriminator, d_extra = Discriminator.load_from_folder(**kwargs)
+        folder = Path(f"{save_path}/{tag}")
+        print(f"Resuming from {folder.resolve()}")
 
-    generator = SemDAC() if generator is None else generator
-    discriminator = Discriminator() if discriminator is None else discriminator
+        if (folder / "semdac").exists():
+            state_dict = torch.load(folder / "semdac" / "weights.pth", map_location="cpu")
+            generator.load_state_dict(state_dict["state_dict"], strict=True)
+            
+            optim_g = torch.load(folder / "semdac" / "optimizer.pth")
+            sched_g = torch.load(folder / "semdac" / "scheduler.pth")
+            
+        if (folder / "discriminator").exists():
+            state_dict = torch.load(folder / "discriminator" / "weights.pth", map_location="cpu")
+            discriminator.load_state_dict(state_dict["state_dict"], strict=True)
+            
+            optim_d = torch.load(folder / "discriminator" / "optimizer.pth")
+            sched_d = torch.load(folder/ "discriminator" / "scheduler.pth")
 
     print(generator)
     print(discriminator)
@@ -197,17 +210,15 @@ def load(
         optimizer_d = AdamW(discriminator.parameters(), use_zero=accel.use_ddp)
         scheduler_d = ExponentialLR(optimizer_d)
 
-    if "optimizer.pth" in g_extra:
-        optimizer_g.load_state_dict(g_extra["optimizer.pth"])
-    if "scheduler.pth" in g_extra:
-        scheduler_g.load_state_dict(g_extra["scheduler.pth"])
-    # if "tracker.pth" in g_extra:
-    #     tracker.load_state_dict(g_extra["tracker.pth"])
+    if optim_g:
+        optimizer_g.load_state_dict(optim_g)
+    if sched_g:
+        scheduler_g.load_state_dict(sched_g)
 
-    if "optimizer.pth" in d_extra:
-        optimizer_d.load_state_dict(d_extra["optimizer.pth"])
-    if "scheduler.pth" in d_extra:
-        scheduler_d.load_state_dict(d_extra["scheduler.pth"])
+    if optim_d:
+        optimizer_d.load_state_dict(optim_d)
+    if sched_d:
+        scheduler_d.load_state_dict(sched_d)
 
     sample_rate = accel.unwrap(generator).sample_rate
     with argbind.scope(args, "train"):
@@ -235,6 +246,7 @@ def load(
         train_data=train_data,
         val_data=val_data,
         align_loss=align_loss,
+        step=tag_to_step(tag),
     )
 
 @timer()
@@ -493,6 +505,8 @@ def train(
         metrics = {f"train/{k}": (v.item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
         if accel.local_rank == 0 and step % 50 ==0:
             wandb.log(metrics, step=state.step)
+            metrics_str = " | ".join(f"{k}: {v:.4f}" for k, v in metrics.items())
+            print(f"[step {state.step}] {metrics_str}")
 
         last_iter = (
             step == num_iters - 1 if num_iters is not None else False
@@ -511,6 +525,8 @@ def train(
                     for k, v in tracker.metrics["val"]["mean"].items() if v is not None
                     }
                 wandb.log(val_metrics, step=state.step)
+                metrics_str = " | ".join(f"{k}: {v:.4f}" for k, v in val_metrics.items())
+                print(f"[step {state.step}] {metrics_str}")
             checkpoint(state, save_iters, save_path, tracker)
             print(f"Val done")
 
