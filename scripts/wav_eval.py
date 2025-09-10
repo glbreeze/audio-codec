@@ -91,10 +91,11 @@ def load_yaml_cfg(cfg_yml: Path):
 def build_codec_from_yaml(cfg: dict, ckpt_path: Path, device: str = "cpu", model_type: str ='DAC'):
     model_cfg = {k.split('.')[1]: v for k, v in cfg.items() if k.startswith(model_type)}
     
+    import pdb; pdb.set_trace()
     model_folder = ckpt_path.parts[-2]
     match = re.search(r"cb(\d+)", model_folder)
     codebooks = int(match.group(1))
-    if model_type == 'DiscoDAC':
+    if model_type in ['DiscoDAC', 'SemDAC']:
         match = re.search(r"film(\d+)", model_folder)
         film_layers = match.group(1)
     
@@ -121,6 +122,18 @@ def build_codec_from_yaml(cfg: dict, ckpt_path: Path, device: str = "cpu", model
             codebook_dim=model_cfg.get("codebook_dim", 8),
             n_codebooks=codebooks,
         )
+    elif model_type.lower() == 'semdac':
+        model = dac.model.SemDAC(
+            sample_rate=model_cfg.get("sample_rate", 16000),
+            encoder_dim=model_cfg.get("encoder_dim", 64),
+            encoder_rates=model_cfg.get("encoder_rates", []),
+            decoder_dim=model_cfg.get("decoder_dim", 1536),
+            decoder_rates=model_cfg.get("decoder_rates", []),
+            codebook_size=model_cfg.get("codebook_size", 1024),
+            codebook_dim=model_cfg.get("codebook_dim", 8),
+            n_codebooks=codebooks,
+            film_layer_idx=film_layers,
+        ) 
     else:
         raise ValueError(f"Unknown model_type: {model_type}. Supported types: 'DAC', 'DiscoDAC'")
         
@@ -158,7 +171,13 @@ def main():
         args.split='train'; args.out_csv='train_results.csv'
     else:
         args.split='val'; args.out_csv='val_results.csv'
-    args.model_type = 'DAC' if 'baseline' in args.ckpt else 'DiscoDAC'
+    
+    if 'baseline' in args.ckpt:
+        args.model_type = 'DAC' 
+    elif 'sem' in args.ckpt:
+        args.model_type = 'SemDAC'
+    else:
+        args.model_type = 'DiscoDAC'
 
     org_dir = Path(args.org_dir)
     assert org_dir.exists(), "org_dir must exist."
@@ -227,6 +246,7 @@ def main():
     else:
         utt_ids = sorted(org_files.keys())
 
+    # ======================= Main Loop =======================
     for idx, uid in enumerate(utt_ids):
         file_path = org_files[uid]
         org_signal = load_audio(file_path, sr=args.sr)
@@ -239,9 +259,16 @@ def main():
         with torch.no_grad():
             org_signal.audio_data = org_signal.audio_data.to(device)
             out = model(org_signal.audio_data, org_signal.sample_rate, n_quantizers=args.cb)  # audio_data: [B, C=1, T]
-            dec_signal = AudioSignal(out["audio"], org_signal.sample_rate)
+            dec_signal = AudioSignal(out["audio"].cpu(), org_signal.sample_rate)
+        
+        # === save reconstructed wav for evaluation (ViSQOL, listening) ===
+        if args.split in ['val']:
+            recon_dir = Path(args.ckpt).parent / "reconstructed_wav" / args.split
+            recon_dir.mkdir(parents=True, exist_ok=True)
+            recon_path = recon_dir / f"{uid}.wav"
+            dec_signal.write(recon_path)
             
-        if args.model_type.lower() == 'dac': 
+        if args.model_type.lower() in ['dac', 'semdac']: 
             codes = out["codes"]      # [B, K, T]
             latents = out["latents"]  # [B, 8, T]
         elif args.model_type.lower() == 'discodac':

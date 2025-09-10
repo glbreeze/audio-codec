@@ -83,3 +83,20 @@ python scripts/wave_eval.py \
 
 
 
+# ============== resume running 
+
+
+python scripts/train_sem_resume.py --args.load conf/sem_base.yml \
+    --hubert_layer 9 \
+    --lambdas.align/loss 1 \
+    --SemanticEmbedLoss.loss_type l2 \
+    --SemDAC.n_codebooks 2 \
+    --SemDAC.film_layer_idx '02' \
+    --batch_size 48 \
+    --save_path runs_08/sem_cb2_film02 \
+    --exp_name sem_cb2_film02 \
+    --tag 50k \
+    --resume True \
+    --run_id kevughpd \
+    --load_weights True 
+"

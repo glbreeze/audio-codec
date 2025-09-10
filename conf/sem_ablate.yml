@@ -32,8 +32,8 @@ ExponentialLR.gamma: 0.999996
 amp: false
 val_batch_size: 100
 device: cuda
-num_iters: 250000
-save_iters: [10000, 50000, 100000, 200000]
+num_iters: 350000
+save_iters: [10000, 50000, 100000, 200000, 250000, 300000, 350000]
 valid_freq: 1000
 sample_freq: 10000
 num_workers: 32
