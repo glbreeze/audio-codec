@@ -199,8 +199,8 @@ def main():
     ap.add_argument("--hidden", type=int, default=256)
     ap.add_argument("--layers", type=int, default=2)
     ap.add_argument("--epochs", type=int, default=5)
-    ap.add_argument("--batch_size", type=int, default=32)
-    ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--batch_size", type=int, default=48)
+    ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--exp_name", type=str, default='baseline')
     args = ap.parse_args()
     
@@ -209,9 +209,11 @@ def main():
     
     args.device="cuda" if torch.cuda.is_available() else "cpu"
     if "baseline" in args.data_root:
-        args.model_type='dac'
+        args.model_type = 'dac'
+    elif "sem" in args.data_root:
+        args.model_type = 'semdac'
     else:
-        args.model_type='discodac'
+        args.model_type = 'discodac'
 
     random.seed(0); np.random.seed(0); torch.manual_seed(0)
     
@@ -229,8 +231,8 @@ def main():
     ev_data = CodecDataset(ev_manifest, input_type=args.input_type)
     collate = build_collate(args.input_type)
     
-    tr_loader = torch.utils.data.DataLoader(tr_data, batch_size=args.batch_size, shuffle=True, collate_fn=collate)
-    ev_loader = torch.utils.data.DataLoader(ev_data, batch_size=args.batch_size, shuffle=False, collate_fn=collate)
+    tr_loader = torch.utils.data.DataLoader(tr_data, batch_size=args.batch_size, shuffle=True, collate_fn=collate, num_workers=8, prefetch_factor=2, pin_memory=True)
+    ev_loader = torch.utils.data.DataLoader(ev_data, batch_size=args.batch_size, shuffle=False, collate_fn=collate, num_workers=8, prefetch_factor=2, pin_memory=True)
 
    # ======= prepare model =======
     print('---------define model--------')
@@ -247,6 +249,7 @@ def main():
 
     model.to(args.device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=opt, factor=0.5, patience=5)
 
     for ep in range(1, args.epochs+1):
         tr_wer, tr_cer, tr_loss, tr_mi = run_epoch(model, tr_loader, optimizer=opt, device=args.device, codebooks=codebooks, input_type=args.input_type, dec_scheme='greedy')
@@ -255,6 +258,7 @@ def main():
             'train/cer':tr_cer,
             'train/loss':tr_loss,
             'train/mi':tr_mi,
+            'train/lr':opt.param_groups[0]["lr"],
             }, step=ep)
         dv_wer, dv_cer, dv_loss, dv_mi = run_epoch(model, ev_loader, optimizer=None, device=args.device, codebooks=codebooks, input_type=args.input_type, dec_scheme='beam')
         wandb.log({
@@ -263,6 +267,7 @@ def main():
             'val/loss':dv_loss,
             'val/mi':dv_mi,
             }, step=ep)
+        scheduler.step(dv_loss)
 
         print(f"[ep {ep:02d}] train WER={tr_wer:.3f} CER={tr_cer:.3f} loss={tr_loss:.3f} MI={tr_mi:.3f} | dev WER={dv_wer:.3f} CER={dv_cer:.3f} loss={dv_loss:.3f} MI={dv_mi:.3f}")
 

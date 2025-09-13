@@ -131,5 +131,4 @@ def save_item_npz(
     kw["latent"] = latent
 
     np.savez_compressed(path, **kw)
-    print(f'save file to {path.name}')
     return path

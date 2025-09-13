@@ -91,7 +91,6 @@ def load_yaml_cfg(cfg_yml: Path):
 def build_codec_from_yaml(cfg: dict, ckpt_path: Path, device: str = "cpu", model_type: str ='DAC'):
     model_cfg = {k.split('.')[1]: v for k, v in cfg.items() if k.startswith(model_type)}
     
-    import pdb; pdb.set_trace()
     model_folder = ckpt_path.parts[-2]
     match = re.search(r"cb(\d+)", model_folder)
     codebooks = int(match.group(1))
@@ -165,6 +164,7 @@ def main():
     
     ap.add_argument("--subset", type=float, default=1.0)
     ap.add_argument("--eval_flag", action='store_true', default=False)
+    ap.add_argument("--save_raw", action='store_true', default=False)
 
     args = ap.parse_args()
     if 'train' in args.org_dir:
@@ -267,6 +267,18 @@ def main():
             recon_dir.mkdir(parents=True, exist_ok=True)
             recon_path = recon_dir / f"{uid}.wav"
             dec_signal.write(recon_path)
+            if idx % 1000 == 0:
+                print(f'---save the {idx}th reconstruced signal to {recon_path}')
+            
+            if args.save_raw:
+                raw_dir = Path(args.ckpt).parent.parent / "raw_wav" / args.split
+                raw_dir.mkdir(parents=True, exist_ok=True)
+                raw_path = raw_dir / f"{uid}.wav"
+                org_signal.audio_data = org_signal.audio_data.cpu()
+                org_signal.write(raw_path)
+                
+                if idx % 1000 == 0:
+                    print(f'---save the {idx}th raw signal to {raw_path}')
             
         if args.model_type.lower() in ['dac', 'semdac']: 
             codes = out["codes"]      # [B, K, T]
@@ -276,11 +288,14 @@ def main():
             latents = torch.cat([out['latents_sem'], out['latents_acs'][:, :model.codebook_dim,:]], dim=1) # [B, 16, T]
         
         # === store latent code ===
+        npz_folder_path = Path(args.ckpt).parent/'asr_data'
         save_item_npz(
-            out_dir=Path(args.ckpt).parent/'asr_data', split=args.split, utt_id=uid, text=gt_txt,
+            out_dir=npz_folder_path, split=args.split, utt_id=uid, text=gt_txt,
             code=codes[0].cpu().numpy(),
             latent=latents[0].cpu().numpy(),
             )
+        if idx % 1000 == 0:
+            print(f'save latent code of {idx}-th file to {npz_folder_path.name}')
         
         if args.eval_flag:
             # ======== get wer and cer  ======== 
