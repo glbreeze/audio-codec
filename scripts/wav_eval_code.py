@@ -201,6 +201,8 @@ def main():
     ap.add_argument("--epochs", type=int, default=5)
     ap.add_argument("--batch_size", type=int, default=48)
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--wd", type=float, default=5e-4)
+    ap.add_argument("--dropout", type=float, default=0)
     ap.add_argument("--exp_name", type=str, default='baseline')
     args = ap.parse_args()
     
@@ -242,13 +244,13 @@ def main():
         codebooks = x0.shape[1] if args.n_codebooks<=0 else args.n_codebooks
         vocab=1024 if args.model_type=='dac' else [512, 1024]
         model = LatentCTCProbe("discrete", codebooks=codebooks, vocab=vocab, d_emb=args.d_emb,
-                               hidden=args.hidden, n_layers=args.layers)
+                               hidden=args.hidden, n_layers=args.layers, dropout=args.dropout)
     else:
         in_dim = x0.size(1)
-        model = LatentCTCProbe("continuous", d_in=in_dim, d_emb=args.d_emb, hidden=args.hidden, n_layers=args.layers)
+        model = LatentCTCProbe("continuous", d_in=in_dim, d_emb=args.d_emb, hidden=args.hidden, n_layers=args.layers, dropout=args.dropout)
 
     model.to(args.device)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=opt, factor=0.5, patience=5)
 
     for ep in range(1, args.epochs+1):

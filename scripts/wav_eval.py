@@ -6,6 +6,7 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from visqol_wrapper import ViSQOL
 
 import torch
 import torch.nn.functional as F
@@ -163,6 +164,7 @@ def main():
     ap.add_argument("--whisper_model", type=str, default="medium.en", help="e.g., tiny.en, base.en, small.en, medium.en")
     
     ap.add_argument("--subset", type=float, default=1.0)
+    ap.add_argument("--save_data", action='store_true', default=False)
     ap.add_argument("--eval_flag", action='store_true', default=False)
     ap.add_argument("--save_raw", action='store_true', default=False)
 
@@ -213,6 +215,9 @@ def main():
         run_opts={"device": device},
         savedir="pretrained_ecapa"
     )
+    # ================== visqol wrapper =======================
+    visqol = ViSQOL(bin="/home/asus/visqol", mode="speech", 
+                model="lattice_tcditugenmeetpackhref_ls2_nl60_lr12_bs2048_learn.005_ep2400_train1_7_raw.tflite")
     
     # ================== load pretrained codec model  ================== 
     cfg = load_yaml_cfg(Path(args.cfg_yml))
@@ -262,7 +267,7 @@ def main():
             dec_signal = AudioSignal(out["audio"].cpu(), org_signal.sample_rate)
         
         # === save reconstructed wav for evaluation (ViSQOL, listening) ===
-        if args.split in ['val']:
+        if args.split in ['val'] and args.save_data:
             recon_dir = Path(args.ckpt).parent / "reconstructed_wav" / args.split
             recon_dir.mkdir(parents=True, exist_ok=True)
             recon_path = recon_dir / f"{uid}.wav"
@@ -270,7 +275,7 @@ def main():
             if idx % 1000 == 0:
                 print(f'---save the {idx}th reconstruced signal to {recon_path}')
             
-            if args.save_raw:
+            if args.save_raw:  # save raw wav file for validation set only
                 raw_dir = Path(args.ckpt).parent.parent / "raw_wav" / args.split
                 raw_dir.mkdir(parents=True, exist_ok=True)
                 raw_path = raw_dir / f"{uid}.wav"
@@ -288,14 +293,15 @@ def main():
             latents = torch.cat([out['latents_sem'], out['latents_acs'][:, :model.codebook_dim,:]], dim=1) # [B, 16, T]
         
         # === store latent code ===
-        npz_folder_path = Path(args.ckpt).parent/'asr_data'
-        save_item_npz(
-            out_dir=npz_folder_path, split=args.split, utt_id=uid, text=gt_txt,
-            code=codes[0].cpu().numpy(),
-            latent=latents[0].cpu().numpy(),
-            )
-        if idx % 1000 == 0:
-            print(f'save latent code of {idx}-th file to {npz_folder_path.name}')
+        if args.save_data:
+            npz_folder_path = Path(args.ckpt).parent/'asr_data'
+            save_item_npz(
+                out_dir=npz_folder_path, split=args.split, utt_id=uid, text=gt_txt,
+                code=codes[0].cpu().numpy(),
+                latent=latents[0].cpu().numpy(),
+                )
+            if idx % 1000 == 0:
+                print(f'save latent code of {idx}-th file to {npz_folder_path.name}')
         
         if args.eval_flag:
             # ======== get wer and cer  ======== 
@@ -312,6 +318,15 @@ def main():
             delta_wer = wer_dec - wer_ref
             delta_cer = cer_dec - cer_ref
             
+            # ======== ViSQOL ========
+            try:
+                ref_tensor = org_signal.audio_data.cpu()  # [1, T]
+                deg_tensor = dec_signal.audio_data.cpu()  # [1, T]
+                visqol_score = visqol(ref_tensor, deg_tensor, sr=args.sr)
+            except Exception as e:
+                print(f"❌ ViSQOL failed on {uid}: {e}")
+                visqol_score = float("nan")
+            
             #  ======== PESQ/STOI  ======== 
             pesq_score = pesq(args.sr, ref=org_signal.audio_data.squeeze().cpu().numpy(), deg=dec_signal.audio_data.squeeze().cpu().numpy(), mode='wb')
             stoi_score = stoi(org_signal.audio_data.squeeze().cpu().numpy(), dec_signal.audio_data.squeeze().cpu().numpy(), args.sr, extended=False)
@@ -326,8 +341,8 @@ def main():
             spk_emb_ref[uid] = emb_ref
             spk_emb_dec[uid] = emb_dec
             spk_map[uid] = spk_id
-
-            rows.append({
+            
+            row = {
                 "utt_id": uid,
                 "speaker": spk_id,
                 "WER_ref": wer_ref,
@@ -338,12 +353,17 @@ def main():
                 "Delta_CER": delta_cer,
                 "PESQ_wb": pesq_score,
                 "STOI": stoi_score,
+                "ViSQOL": visqol_score,
                 "SNR": snr_score,
                 "SpkCos": spk_cos,
                 "gt_text": (refs_df.loc[uid, "text"] if (uid in refs_df.index) else None),
                 "text_ref": org_texts[uid], 
                 "text_deg": dec_texts[uid],
-            })
+            }
+
+            rows.append(row)
+            if idx % 1000 == 0:
+                print(f'finished evaluation of {idx}-th sample: {row}')
 
     if args.eval_flag:
         df = pd.DataFrame(rows)
@@ -366,7 +386,8 @@ def main():
             "PESQ_wb": mean_ignore_nan(df["PESQ_wb"].tolist()),
             "STOI": mean_ignore_nan(df["STOI"].tolist()),
             "SpkCos": mean_ignore_nan(df["SpkCos"].tolist()),
-            "SNR": mean_ignore_nan(df["SNR"].tolist())
+            "SNR": mean_ignore_nan(df["SNR"].tolist()),
+            "ViSQOL": mean_ignore_nan(df["ViSQOL"].tolist())
         }
 
         #  ==========  EER  ========== 

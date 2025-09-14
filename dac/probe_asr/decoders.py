@@ -74,7 +74,8 @@ def beam_ctc_decode(
     beam_indices, beam_lens, beam_transcripts = [], [], []
     for sample in beam_results:   # one sample per batch
         best_hyp = sample[0]      # best hypothesis
-        tokens_ids = torch.tensor(best_hyp.tokens, dtype=torch.int)
+        tokens_ids = best_hyp.tokens.to(torch.int)
+
         beam_indices.append(tokens_ids)
         beam_lens.append(len(tokens_ids))
         beam_transcripts.append(" ".join(best_hyp.words))

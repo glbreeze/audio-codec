@@ -23,7 +23,7 @@ class EmbeddingStack(nn.Module):
         return torch.stack(embs, dim=0).mean(0)  # [B,T,d]
 
 class LatentCTCProbe(nn.Module):
-    def __init__(self, mode, d_in=None, codebooks=None, vocab=None, d_emb=128, hidden=256, n_layers=2, n_chars=len(tokens)):
+    def __init__(self, mode, d_in=None, codebooks=None, vocab=None, d_emb=128, hidden=256, n_layers=2, n_chars=len(tokens), dropout=0):
         super().__init__()
         assert mode in {"discrete","continuous"}
         self.mode = mode
@@ -35,8 +35,22 @@ class LatentCTCProbe(nn.Module):
             assert d_in is not None
             self.frontend = nn.Linear(d_in, d_emb)
             d_front = d_emb
+        
+        self.proj = nn.Sequential(
+            nn.Linear(d_front, 2*d_front),
+            nn.ReLU(),
+            nn.Dropout(0.1)
+        )
             
-        self.rnn = nn.LSTM(d_front, hidden, num_layers=n_layers, batch_first=True, bidirectional=True)
+        self.rnn = nn.LSTM(
+            input_size = 2*d_front, 
+            hidden_size = hidden, 
+            num_layers=n_layers, 
+            batch_first=True, 
+            bidirectional=True,
+            dropout=dropout
+        )
+        
         self.out = nn.Linear(hidden*2, n_chars)  # include blank at idx 0
         self.log_softmax = nn.LogSoftmax(dim=-1)
 
@@ -44,7 +58,9 @@ class LatentCTCProbe(nn.Module):
         # x: [B,T,M] (long) for discrete OR [B,T,D] float for continuous
         if self.mode == "discrete" and x.dtype != torch.long:
             x = x.long()
-        h = self.frontend(x)                # [B,T,d]
+            
+        h = self.frontend(x)   # [B,T,d]
+        h = self.proj(h)       # [B,T,2d]              
         
         h = nn.utils.rnn.pack_padded_sequence(h, x_lens.cpu(), batch_first=True, enforce_sorted=False)
         h, _ = self.rnn(h)                  # [B,T,2H]
